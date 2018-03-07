@@ -4,10 +4,21 @@
 #include <stdint.h>
 #include <errno.h>
 
+__constant__ uint32_t chromakey = 0x11111111;
+
 typedef enum MemMode_t {
   MEM_HOST_PAGEABLE,
   MEM_HOST_PINNED
 } MemMode_t;
+
+typedef enum ImageActions_t {
+  MODE_PIPE_MASK = 0,
+  MODE_MASK = 1,
+  MODE_FLIP_HOR,
+  MODE_FLIP_VER,
+  MODE_UNSPECIFIED
+} ImageActions_t;
+
 
 /* Image Generation Configuration
  *  We'll use a simple RGB color scheme
@@ -66,11 +77,11 @@ void write_image(char *fn, uint32_t *buf, unsigned int width, unsigned int heigh
  * @param[out] width of loaded image.
  * @return 1 on success, -1 on failure.
  */
-int load_image(char* fn, uint32_t **buff, size_t *buf_length, size_t *height, size_t *width, MemMode_t mem_mode)
+int load_image(char* fn, uint32_t **buff, uint32_t *buf_length, uint32_t *height, uint32_t *width, MemMode_t mem_mode)
 {
   FILE *fp;
   int c, rgb_comp_color, r, g, b;
-  size_t size;
+  uint32_t size;
   char tmp[16];
   cudaError_t cuda_status;
 
@@ -181,6 +192,7 @@ int load_image(char* fn, uint32_t **buff, size_t *buf_length, size_t *height, si
     
 }
 
+// Pipe two data set values together (bitwise-or)
 __global__
 void data_merge(unsigned int * data, unsigned int * data2)
 {
@@ -191,57 +203,102 @@ void data_merge(unsigned int * data, unsigned int * data2)
 	
 }
 
-void brighten_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
-		    uint32_t* data, MemMode_t mem_mode, uint32_t mask)
+// Adjust data set by bitwise oring all values against a constant value (chromakey)
+__global__
+void key_merge(uint32_t *data, uint32_t const opt)
+{
+  const unsigned int thread_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+  if (opt == 0) {
+    data[thread_idx] = (data[thread_idx] | chromakey);
+  } else {
+    data[thread_idx] = (data[thread_idx] & chromakey);
+  }
+}
+
+/** Flip the image horizontally
+ *   This basic version assumes that the number of threads is equal to the
+ *      widtdh of the image, and blocks to the height.
+ */ 
+__global__
+void flip_image_row(uint32_t *data)
+{
+  /*extern*/ __shared__ int row[512];
+  int x = threadIdx.x; // col
+  int nx = blockDim.x; // num_threads = number of columns
+  int ybase = blockIdx.x * nx; // start of row
+  
+
+  row[x] = data[ybase+x];
+  __syncthreads();
+  data[ybase + nx-1 - x] = row[x];
+}
+
+/** Flip the image vertically
+ *  This basic version assumes that the number of threads is equal to the
+ *    height of the image, and blocks to the width.
+ */ 
+__global__
+void flip_image_col(uint32_t *data)
+{
+  extern __shared__ int col[];
+  const int y = threadIdx.x;
+  const int dim = blockDim.x;
+  const int x = blockIdx.x;
+
+  const unsigned int idx = (y * dim) + x;
+  col[y] = data[idx];
+  __syncthreads();
+  data[idx] = col[dim - 1 - y];
+    
+}
+
+
+void mod_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
+		uint32_t* data, ImageActions_t const mode)
 {
   // Data/Array size defined in this example to match thread/block configuration
-  size_t data_size = num_threads*num_blocks*sizeof(uint32_t);
+  uint32_t data_size = num_threads*num_blocks*sizeof(uint32_t);
   
   /* Declare pointers for GPU based params */
   unsigned int *gpu_data;
-  unsigned int *gpu_data2;
-  unsigned int *cpu_data2;
 
   // Define performance metrics
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
   
-  // Note: Since the same value is being applied to all entries, we could just use a single var,
-  //  but an array serves as a better demo/test for now, and a basis for more advanced effects
-  //  later..
-  switch(mem_mode) {
-  case MEM_HOST_PAGEABLE:
-    cpu_data2 = (unsigned int *)malloc(data_size * sizeof(int32_t) );
-    break;
-  case MEM_HOST_PINNED:
-    cudaMallocHost((void **)&cpu_data2, data_size * sizeof(int32_t) );
-    break;
-  default:
-    fprintf(stderr, "Invalid memory mode selected\n");
-    return;
-  }
-  for(int i = 0; i < num_threads*num_blocks; i++) {
-    cpu_data2[i] = mask;
-  }
-
-  
   cudaMalloc((void **)&gpu_data, data_size);
-  cudaMalloc((void **)&gpu_data2, data_size);
 
   cudaMemcpy( gpu_data, data, data_size, cudaMemcpyHostToDevice );
-  cudaMemcpy( gpu_data2, cpu_data2, data_size, cudaMemcpyHostToDevice );
 
   /* Execute our kernel */
   cudaEventRecord(start);
-  data_merge<<<num_blocks, num_threads>>>(gpu_data, gpu_data2);
+  switch(mode) {
+  case MODE_PIPE_MASK:
+  case MODE_MASK:
+    key_merge<<<num_blocks, num_threads>>>(gpu_data, mode);
+    break;
+  case MODE_FLIP_HOR:
+    // Third parameter dynamically allocates shared memory
+    flip_image_row<<<num_blocks, num_threads/*, num_threads*sizeof(int)*/>>>(gpu_data);
+    break;
+  case MODE_FLIP_VER:
+    // Third parameter dynamically allocates shared memory
+    flip_image_col<<<num_blocks, num_threads, num_blocks*sizeof(int)>>>(gpu_data);
+    break;
+  default:
+    printf("ERROR: Invalid mode (%d) passed to mod_image function\n", mode);
+  }
+
+  // Wait for the GPU launched work to complete
+  //   (failure to do so can have unpredictable results)
+  cudaThreadSynchronize();	
+  
   cudaEventRecord(stop);
   
   /* Free the arrays on the GPU as now we're done with them */
   cudaMemcpy( data, gpu_data, data_size, cudaMemcpyDeviceToHost );
-  cudaMemcpy( cpu_data2, gpu_data2, data_size, cudaMemcpyDeviceToHost );
   cudaFree(gpu_data);
-  cudaFree(gpu_data2);
 
   /* Iterate through the arrays and output */
   if (verbose) {
@@ -252,20 +309,16 @@ void brighten_image(unsigned int num_threads, unsigned int num_blocks, int verbo
       }
   }
 
-  switch(mem_mode) {
-  case MEM_HOST_PAGEABLE:
-    free(cpu_data2);
-    break;
-  case MEM_HOST_PINNED:
-    cudaFreeHost(cpu_data2);
-    break;
-  }
-
   // Output timing metrics
   cudaEventSynchronize(stop);
   float milliseconds = 0;
   cudaEventElapsedTime(&milliseconds, start, stop);
-  printf("data_merge CUDA operation took %f ms\n", milliseconds);
+  printf("mask_merge CUDA operation took %f ms\n", milliseconds);
+
+  // Report if any errors occurred during CUDA operations
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+    printf("Error: %s\n", cudaGetErrorString(err));
   
 }
 
@@ -279,12 +332,35 @@ int main(int argc, char* argv[])
   unsigned int num_blocks = 0;
   unsigned int num_threads = 0;
   uint32_t *data = NULL;
-  size_t data_length, height, width;
+  uint32_t data_length, height, width;
   MemMode_t memMode = MEM_HOST_PAGEABLE;
   int n = 1;
+  int tmp;
+  ImageActions_t mode = MODE_PIPE_MASK;
+  cudaDeviceProp deviceProp;
 
-  while((c = getopt(argc, argv, "phvi:t:n:o:")) != -1) {
+  // Get and output basic device information
+  if (cudaSuccess != cudaGetDeviceProperties(&deviceProp, 0)) {
+    printf("ERROR: Unable to get device properties.\n");
+    return -1;
+  } else {
+    printf("INFO: GPU supports a warpSize of %d, and a maximum of %d threads per block\n",
+	   deviceProp.warpSize,
+	      deviceProp.maxThreadsPerBlock
+	   );
+  }
+
+  // Parse input arguments
+  while((c = getopt(argc, argv, "phvi:t:n:o:k:m:")) != -1) {
     switch(c) {
+    case 'k':
+      tmp = atoi(optarg);
+      cudaMemcpyToSymbol(chromakey, &tmp, sizeof(int));
+      break;
+    case 'm':
+      // Parse mode: This is easier than bringing in Boost for more user-friendly command-line parsing.
+      mode = (ImageActions_t)atoi(optarg);
+      break;
     case 'v':
       verbose = 1;
       break;
@@ -309,14 +385,31 @@ int main(int argc, char* argv[])
     case 'h':
       printf("Usage: \n");
       printf("\t-h     Show this message\n");
+      printf("\t-m #   Specify action to be performed.  Currently supported modes are:\n");
+      printf("\t          0  Image Mask - Bitwise or each pixel value with provided key\n");
+      printf("\t          1  Image Mask - Bitwise and each pixel value with provided key\n");
+      printf("\t          2  Image Flip Horizontal*\n");
+      printf("\t          3  Image Flip Vertical*\n");
+      printf("\t-k #   Specify key value (ie: chromakey mask or cipher value)\n");
       printf("\t-v     Enable verbose output mode.\n");
       printf("\t-i     Select image file to load (ppm format required)\n");
       printf("\t-o     Select output filename (ppm format)\n");
       printf("\t-p     Use pinned host memory (cudaMallocHost) instead of the default pageable (malloc).\n");
       printf("\t-n     Repeat action n times\n");
-      return -1;
+      printf("\n\n");
+      printf("* At this time, these operations are intended to operate where\n");
+      printf("  num_threads equals the width of the image. If this is not the case,\n");
+      printf("  output may vary. For example, if num_threads is half the image\n");
+      printf("  width, then the flip function will flip the left and right halves of\n");
+      printf("  the image distinctly as if they are seperate images.  Logic to\n");
+      printf("  handle such cases correctly is reserved for future enhancements.\n");
+      printf("\n");
+      printf("**To keep things simple, at this time operations may assume that images\n");
+      printf("** are square (height=width), and works best when they are a power of 2\n");
+      printf("   or a multiple of 32 (warp size).\n");
+      return 1;
     default:
-      printf("ERROR: Option %s is not supported, type h for usage info.\n", (char)c);
+      printf("ERROR: Option %s is not supported, use -h for usage info.\n", (char)c);
       return -1;
     }
   }
@@ -350,7 +443,18 @@ int main(int argc, char* argv[])
 
   // Simple Image Processing: Merge with a mask to "brighten"
   while(n > 0) {
-    brighten_image(num_threads, num_blocks, verbose, data, memMode, 0x11111111);
+    switch(mode) {
+    case MODE_PIPE_MASK:
+    case MODE_MASK:
+    case MODE_FLIP_HOR:
+    case MODE_FLIP_VER:
+      mod_image(num_threads, num_blocks, verbose, data, mode);
+      break;
+    default:
+      printf("ERROR: Mode %d not currently supported. Nothing to do\n", mode);
+      n = 0;
+      break;
+    }
     n--;
   }
 
