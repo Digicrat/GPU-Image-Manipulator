@@ -68,7 +68,7 @@ void write_image(char *fn, uint32_t *buf, unsigned int width, unsigned int heigh
   fclose(f);
 }
 
-/**
+/** Load PPM-format image into memory
  * @param[in] fn Filename to load
  * @param[inout] buff Buffer to load into.  If NULL, buffer will be malloced
  * @param[inout] buf_size Pointer to a variable containing the length of the provided buffer (in int32 elements), if applicable. 
@@ -222,7 +222,7 @@ void key_merge(uint32_t *data, uint32_t const opt)
 __global__
 void flip_image_row(uint32_t *data)
 {
-  /*extern*/ __shared__ int row[512];
+  extern __shared__ int row[];
   int x = threadIdx.x; // col
   int nx = blockDim.x; // num_threads = number of columns
   int ybase = blockIdx.x * nx; // start of row
@@ -280,7 +280,7 @@ void mod_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
     break;
   case MODE_FLIP_HOR:
     // Third parameter dynamically allocates shared memory
-    flip_image_row<<<num_blocks, num_threads/*, num_threads*sizeof(int)*/>>>(gpu_data);
+    flip_image_row<<<num_blocks, num_threads, num_threads*sizeof(int)>>>(gpu_data);
     break;
   case MODE_FLIP_VER:
     // Third parameter dynamically allocates shared memory
@@ -458,8 +458,6 @@ int main(int argc, char* argv[])
     n--;
   }
 
-  // FUTURE: Above processing can be made configurable and/or strung together in multiple phases.
-  
   // Write the image back out
   write_image(out_fn, data, width, height);
   
