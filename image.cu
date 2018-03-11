@@ -223,11 +223,10 @@ __global__
 void flip_image_row(uint32_t *data)
 {
   extern __shared__ int row[];
-  int x = threadIdx.x; // col
-  int nx = blockDim.x; // num_threads = number of columns
-  int ybase = blockIdx.x * nx; // start of row
+  const int x = threadIdx.x; // col
+  const int nx = blockDim.x; // num_threads = number of columns
+  const int ybase = blockIdx.x * nx; // start of row
   
-
   row[x] = data[ybase+x];
   __syncthreads();
   data[ybase + nx-1 - x] = row[x];
