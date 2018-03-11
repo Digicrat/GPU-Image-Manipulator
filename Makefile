@@ -5,6 +5,23 @@ all: gpu_image
 gpu_image: image.cu
 	nvcc image.cu -o gpu_image
 
+mod6: gpu_image
+	convert Lenna.png Lenna.ppm
+	@echo "Encode 'Hello Hidden World!'"
+	./gpu_image -i Lenna.ppm -o Lenna.hello.ppm -k 42 -m 4 -M "Hello Hidden World!"
+	convert Lenna.hello.ppm Lenna.hello.png
+	convert Lenna.hello.png Lenna.hello.conv.ppm
+	@echo "Reading back message:"
+	./gpu_image -i Lenna.ppm -o Lenna.hello.conv.ppm -k 42 -m 5
+
+	@echo "Encode 'All your base are belong to us'"
+	./gpu_image -i Lenna.ppm -o Lenna.hello.ppm -k 417 -m 4 -M "All you rbase are belong to us"
+	convert Lenna.base.ppm Lenna.base.png
+	convert Lenna.base.png Lenna.base.conv.ppm
+	@echo "Reading back message:"
+	./gpu_image -i Lenna.ppm -o Lenna.base.conv.ppm -k 42 -m 5
+
+
 mod5: gpu_image
 	convert Lenna.png Lenna.ppm
 	@echo "Constant Memory, Apply or-mask of 0xFF (set red channel to max)"

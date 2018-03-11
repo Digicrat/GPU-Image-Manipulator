@@ -16,6 +16,8 @@ typedef enum ImageActions_t {
   MODE_MASK = 1,
   MODE_FLIP_HOR,
   MODE_FLIP_VER,
+  MODE_STEG_EN, // Steganographic Encryption of a Message
+  MODE_STEG_DE, // Steganographic Decryption of a Message
   MODE_UNSPECIFIED
 } ImageActions_t;
 
@@ -160,7 +162,8 @@ int load_image(char* fn, uint32_t **buff, uint32_t *buf_length, uint32_t *height
     *buf_length = size;
     printf("Allocated buffer for image of length %d\n", size);
   } else if (*buf_length != NULL && *buf_length < size ) {
-    printf("ERROR: buf_length (%d) undefined or insufficent for image (%d x %d = %d)\n", buf_length, *height, *width, size);
+    printf("ERROR: buf_length (%d) undefined or insufficent for image (%d x %d = %d)\n",
+	   buf_length, *height, *width, size);
     return -1;
   } else {
     printf("Using pre-allocated buffer (0x%x)\n", buff);
@@ -321,11 +324,215 @@ void mod_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
   
 }
 
+/**
+ * This kernel should be executed once for every pixel
+ */
+__global__
+void gpu_steg_image_en(uint32_t *data, char *msg, uint32_t msg_len)
+{
+  const unsigned int thread_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+  unsigned int tmp;
+  unsigned char halfByte;
+  
+  if (thread_idx < msg_len)
+  {
+    tmp = data[thread_idx];
+
+    // Load the half-byte from source message
+    if (threadIdx.x & 0x1 == 1) {
+      // Odd threads take the upper half-byte
+      halfByte = (msg[thread_idx]) >> 4;
+    } else {
+      // Even threads take the lower half-byte
+      halfByte = msg[thread_idx];
+    }
+
+    // Add cipher (Note: We don't need to mask overflow bytes, since we select bits below)
+    halfByte += chromakey;
+
+    // Bit-1 of char to Bit-1 of R
+    tmp = tmp ^ (halfByte & 0x1);
+
+    // Bit-2 of char to Bit-1 of G
+    tmp = tmp ^ ((halfByte & 0x2) << 8);
+
+    // Bit-3+4 of char to Bit-1+2 of B
+    tmp = tmp ^ ((halfByte & 0xC) << 16);
+
+      
+    data[thread_idx] = tmp;
+  } else {
+    // Nothing to be done
+  }
+  
+}
+
+/**
+ *  This kernel should be executed once per pixel
+ */
+__global__
+void gpu_steg_image_de(uint32_t *data, uint32_t *data2, char *msg_out)
+{
+  extern __shared__ char msg[];
+  const unsigned int thread_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+  uint32_t tmp, tmp2;
+
+  // Difference the two images using XOR
+  tmp = data2[thread_idx] ^ data[thread_idx];
+
+  // Calculate the half-word
+  tmp2 = GET_R(tmp) & 0x1; // Bit 1
+  tmp2 |= (GET_G(tmp) & 0x1) << 1; // Bit 2
+  tmp2 |= (GET_B(tmp) & 0x3) << 2; // Bits 3+4
+  msg[threadIdx.x] = tmp2;
+
+  // Sync threads
+  __syncthreads();
+
+  /* Note: This next part could be somewhat optimized in theory if we
+     could keep our shared memory but switch to a kernel with half the
+     block size.
+   */
+  if (threadIdx.x & 0x1 == 1) {
+    // Only odd threads will proceed
+
+    // Merge the half-words and apply the cipher (to each half)
+    tmp = (msg[threadIdx.x-1] - chromakey) & 0xF;
+    tmp |= ((msg[threadIdx.x] - chromakey) & 0xF) << 4;
+
+    // Output decrypted character
+    msg_out[ (threadIdx.x-1)/2 ] = tmp;
+    
+  } else {
+    // Even threads are now idle/stalled
+  }
+  
+}
+
+// Simple steganographic message decryption
+int steg_image_de(uint32_t num_threads, uint32_t num_blocks,
+		  uint32_t *data, uint32_t data_length,
+		  char* fn, MemMode_t memMode)
+{
+  int status;
+  uint32_t data2_length, height, width;
+  uint32_t *data2; // Start: Encoded image.  End: Decoded message
+  char *msg;
+  int msgLen;
+
+  /* Declare pointers for GPU based params */
+  unsigned int *gpu_data;
+  unsigned int *gpu_data2;
+  char *gpu_msg;
+
+  // Define performance metrics
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  
+ 
+  // Load Encoded Image
+  status = load_image(fn, &data2, &data2_length, &height, &width, memMode);
+  if (status < 0) {
+    printf("ERROR: Unable to load encoded image\n");
+    return -1;
+  }
+
+  // Validate that lengths match
+  if (data2_length != data_length) {
+    printf("ERROR: Encoded and source images must be of the same size!\n");
+    return -1;
+  }
+
+  // Max message length is 1/2 the number of pixels
+  msgLen = width*height/2;
+  msg = (char*)malloc(msgLen);
+
+  // Load GPU Data
+  cudaMalloc((void **)&gpu_data, data_length);
+  cudaMemcpy( gpu_data, data, data_length, cudaMemcpyHostToDevice );
+  cudaMalloc((void **)&gpu_data2, data_length);
+  cudaMemcpy( gpu_data2, data2, data_length, cudaMemcpyHostToDevice );
+  cudaMalloc((void **)&gpu_msg, msgLen);
+
+  /* Execute our kernel */
+  cudaEventRecord(start);
+  gpu_steg_image_de<<<num_blocks, num_threads, num_threads>>>(gpu_data, gpu_data2, gpu_msg);
+
+  // Wait for the GPU launched work to complete
+  //   (failure to do so can have unpredictable results)
+  cudaThreadSynchronize();
+  cudaEventRecord(stop);
+  
+  
+  /* Cleanup */
+  cudaMemcpy( msg, gpu_msg, msgLen, cudaMemcpyDeviceToHost ); 
+  cudaFree(gpu_data);
+  cudaFree(gpu_data2);
+  cudaFree(gpu_msg);
+  free(msg);
+  switch(memMode) {
+  case MEM_HOST_PAGEABLE:
+    free(data2);
+    break;
+  case MEM_HOST_PINNED:
+    cudaFreeHost(data2);
+    break;
+  }
+
+  printf("Decoded message reads: %s \n\n", msg);
+  return 1;
+}
+
+// Simple steganographic message decryption
+int steg_image_en(uint32_t num_threads, uint32_t num_blocks,
+		  uint32_t *data, uint32_t data_length,
+		  char* msg, MemMode_t memMode)
+{
+  int status;
+  int msgLen = strlen(msg);
+
+  /* Declare pointers for GPU based params */
+  unsigned int *gpu_data;
+  char *gpu_data2;
+
+  // Define performance metrics
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  
+ 
+  // Load GPU Data
+  cudaMalloc((void **)&gpu_data, data_length);
+  cudaMemcpy( gpu_data, data, data_length, cudaMemcpyHostToDevice );
+  cudaMalloc((void **)&gpu_data2, msgLen);
+  cudaMemcpy( gpu_data2, msg, msgLen, cudaMemcpyHostToDevice );
+
+  /* Execute our kernel */
+  cudaEventRecord(start);
+  gpu_steg_image_en<<<num_blocks, num_threads, num_threads>>>(gpu_data, gpu_data2, msgLen);
+
+  // Wait for the GPU launched work to complete
+  //   (failure to do so can have unpredictable results)
+  cudaThreadSynchronize();
+  cudaEventRecord(stop);
+  
+  
+  /* Cleanup */
+  cudaMemcpy( data, gpu_data, data_length, cudaMemcpyDeviceToHost ); 
+  cudaFree(gpu_data);
+  cudaFree(gpu_data2);
+  
+  return 1;
+}
+
+
 int main(int argc, char* argv[])
 {
   int c;
   int verbose = 0;
   char *fn = NULL;
+  char *msg = NULL;
   char out_fn[64] = "out.ppm";
   int status;
   unsigned int num_blocks = 0;
@@ -337,6 +544,7 @@ int main(int argc, char* argv[])
   int tmp;
   ImageActions_t mode = MODE_PIPE_MASK;
   cudaDeviceProp deviceProp;
+  bool skip_img_write = 0;
 
   // Get and output basic device information
   if (cudaSuccess != cudaGetDeviceProperties(&deviceProp, 0)) {
@@ -350,11 +558,14 @@ int main(int argc, char* argv[])
   }
 
   // Parse input arguments
-  while((c = getopt(argc, argv, "phvi:t:n:o:k:m:")) != -1) {
+  while((c = getopt(argc, argv, "phvi:t:n:o:k:m:M:")) != -1) {
     switch(c) {
     case 'k':
       tmp = atoi(optarg);
       cudaMemcpyToSymbol(chromakey, &tmp, sizeof(int));
+      break;
+    case 'M': // ASCII string argument
+      msg = optarg;
       break;
     case 'm':
       // Parse mode: This is easier than bringing in Boost for more user-friendly command-line parsing.
@@ -389,6 +600,12 @@ int main(int argc, char* argv[])
       printf("\t          1  Image Mask - Bitwise and each pixel value with provided key\n");
       printf("\t          2  Image Flip Horizontal*\n");
       printf("\t          3  Image Flip Vertical*\n");
+      printf("\t          4  Steganographic Encryption. Specify ASCII message with '-M'\n");
+      printf("\t                 Optionally use key (-k) as a cipher\n");
+      printf("\t          5  Stegonographic Decryption. ASCII message will be output to STDOUT\n");
+      printf("\t                 Specify the same key as when encoded.\n");
+      printf("\t                 Input image (-i) should be the unaltered image.\n");
+      printf("\t                 Output image (-o) should be the previously altered image.\n");
       printf("\t-k #   Specify key value (ie: chromakey mask or cipher value)\n");
       printf("\t-v     Enable verbose output mode.\n");
       printf("\t-i     Select image file to load (ppm format required)\n");
@@ -408,7 +625,7 @@ int main(int argc, char* argv[])
       printf("   or a multiple of 32 (warp size).\n");
       return 1;
     default:
-      printf("ERROR: Option %s is not supported, use -h for usage info.\n", (char)c);
+      printf("ERROR: Option %c is not supported, use -h for usage info.\n", (char)c);
       return -1;
     }
   }
@@ -441,13 +658,24 @@ int main(int argc, char* argv[])
 	 fn, height, width, num_threads, num_blocks);
 
   // Simple Image Processing: Merge with a mask to "brighten"
-  while(n > 0) {
+  while(n > 0) { // Number of times to repeat (for better timing metrics)
     switch(mode) {
     case MODE_PIPE_MASK:
     case MODE_MASK:
     case MODE_FLIP_HOR:
     case MODE_FLIP_VER:
       mod_image(num_threads, num_blocks, verbose, data, mode);
+      break;
+    case MODE_STEG_DE:
+      steg_image_de(num_threads, num_blocks, data, data_length, out_fn, memMode);
+      skip_img_write = 1;
+      break;
+    case MODE_STEG_EN:
+      if (msg == NULL) {
+	printf("ERROR: Encryption needs a message to encrypt!\n");
+	break;
+      }
+      steg_image_en(num_threads, num_blocks, data, data_length, msg, memMode);
       break;
     default:
       printf("ERROR: Mode %d not currently supported. Nothing to do\n", mode);
@@ -457,8 +685,10 @@ int main(int argc, char* argv[])
     n--;
   }
 
-  // Write the image back out
-  write_image(out_fn, data, width, height);
+  if (skip_img_write == 0) {
+    // Write the image back out
+    write_image(out_fn, data, width, height);
+  }
   
   switch(memMode) {
   case MEM_HOST_PAGEABLE:
