@@ -31,12 +31,12 @@ typedef enum ImageActions_t {
 #define RGB_COMPONENT_COLOR 255
 #define MAX_COLOR RGB_COMPONENT_COLOR
 #define R_SHIFT 0
-#define G_SHIFT 10
-#define B_SHIFT 20
-#define R_MASK 0x000003FF
-#define G_MASK 0x000FFC00
-#define B_MASK 0x3FF00000
-#define S_MASK 0xC0000000 // reserved (ie: alpha channel)
+#define G_SHIFT 8
+#define B_SHIFT 16
+#define R_MASK 0x000000FF
+#define G_MASK 0x0000FF00
+#define B_MASK 0x00FF0000
+#define S_MASK 0xFF000000 // reserved (ie: alpha channel)
 
 #define GET_R(data) (data & R_MASK)
 #define GET_G(data) ((data & G_MASK) >> G_SHIFT)
@@ -51,6 +51,8 @@ void write_image(char *fn, uint32_t *buf, unsigned int width, unsigned int heigh
 {
   FILE *f;
   uint8_t c[3];
+
+  printf("Preparing to output image to %s\n", fn);
 
   f = fopen(fn, "wb");
   if (f == NULL) {
@@ -191,6 +193,16 @@ int load_image(char* fn, uint32_t **buff, uint32_t *buf_length, uint32_t *height
   }
 
   fclose(fp);
+
+#ifdef VERBOSE
+    for(unsigned int i = 0; i < 8; i++)
+      {
+	printf("Data: %08x - %03u %03u %03u\n",
+	       (*buff)[i], GET_R((*buff)[i]), GET_G((*buff)[i]), GET_B((*buff)[i]));
+      }
+#endif
+
+  
   return 1;
     
 }
@@ -334,17 +346,17 @@ void gpu_steg_image_en(uint32_t *data, char *msg, uint32_t msg_len)
   unsigned int tmp;
   unsigned char halfByte;
   
-  if (thread_idx < msg_len)
+  if (thread_idx < msg_len*2)
   {
     tmp = data[thread_idx];
 
     // Load the half-byte from source message
     if (threadIdx.x & 0x1 == 1) {
       // Odd threads take the upper half-byte
-      halfByte = (msg[thread_idx]) >> 4;
+      halfByte = (msg[(thread_idx-1)/2]) >> 4;
     } else {
       // Even threads take the lower half-byte
-      halfByte = msg[thread_idx];
+      halfByte = msg[thread_idx/2];
     }
 
     // Add cipher (Note: We don't need to mask overflow bytes, since we select bits below)
@@ -354,10 +366,10 @@ void gpu_steg_image_en(uint32_t *data, char *msg, uint32_t msg_len)
     tmp = tmp ^ (halfByte & 0x1);
 
     // Bit-2 of char to Bit-1 of G
-    tmp = tmp ^ ((halfByte & 0x2) << 8);
+    tmp = tmp ^ ((halfByte & 0x2) << 7);
 
     // Bit-3+4 of char to Bit-1+2 of B
-    tmp = tmp ^ ((halfByte & 0xC) << 16);
+    tmp = tmp ^ ((halfByte & 0xC) << 14);
 
       
     data[thread_idx] = tmp;
@@ -397,11 +409,11 @@ void gpu_steg_image_de(uint32_t *data, uint32_t *data2, char *msg_out)
     // Only odd threads will proceed
 
     // Merge the half-words and apply the cipher (to each half)
-    tmp = (msg[threadIdx.x-1] - chromakey) & 0xF;
-    tmp |= ((msg[threadIdx.x] - chromakey) & 0xF) << 4;
+    tmp =   ((int)(msg[threadIdx.x-1]) - chromakey) & 0xF;
+    tmp |= (((int)(msg[threadIdx.x]) - chromakey) & 0xF) << 4;
 
     // Output decrypted character
-    msg_out[ (threadIdx.x-1)/2 ] = tmp;
+    msg_out[ (thread_idx-1)/2 ] = tmp;
     
   } else {
     // Even threads are now idle/stalled
@@ -415,8 +427,8 @@ int steg_image_de(uint32_t num_threads, uint32_t num_blocks,
 		  char* fn, MemMode_t memMode)
 {
   int status;
-  uint32_t data2_length, height, width;
-  uint32_t *data2; // Start: Encoded image.  End: Decoded message
+  uint32_t data2_length=0, height, width;
+  uint32_t *data2 = NULL; // Start: Encoded image.  End: Decoded message
   char *msg;
   int msgLen;
 
@@ -481,6 +493,20 @@ int steg_image_de(uint32_t num_threads, uint32_t num_blocks,
   }
 
   printf("Decoded message reads: %s \n\n", msg);
+  printf("DEBUG: msg[0]=%x\n", msg[0]);
+
+  // Output timing metrics
+  cudaEventSynchronize(stop);
+  float milliseconds = 0;
+  cudaEventElapsedTime(&milliseconds, start, stop);
+  printf("decryption CUDA operation took %f ms\n", milliseconds);
+
+  // Report if any errors occurred during CUDA operations
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+    printf("Error: %s\n", cudaGetErrorString(err));
+
+  
   return 1;
 }
 
@@ -517,11 +543,22 @@ int steg_image_en(uint32_t num_threads, uint32_t num_blocks,
   cudaThreadSynchronize();
   cudaEventRecord(stop);
   
-  
   /* Cleanup */
   cudaMemcpy( data, gpu_data, data_length, cudaMemcpyDeviceToHost ); 
   cudaFree(gpu_data);
   cudaFree(gpu_data2);
+
+  // Output timing metrics
+  cudaEventSynchronize(stop);
+  float milliseconds = 0;
+  cudaEventElapsedTime(&milliseconds, start, stop);
+  printf("encryption CUDA operation took %f ms\n", milliseconds);
+
+  // Report if any errors occurred during CUDA operations
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+    printf("Error: %s\n", cudaGetErrorString(err));
+
   
   return 1;
 }
@@ -538,7 +575,7 @@ int main(int argc, char* argv[])
   unsigned int num_blocks = 0;
   unsigned int num_threads = 0;
   uint32_t *data = NULL;
-  uint32_t data_length, height, width;
+  uint32_t data_length=0, height, width;
   MemMode_t memMode = MEM_HOST_PAGEABLE;
   int n = 1;
   int tmp;
@@ -686,6 +723,14 @@ int main(int argc, char* argv[])
   }
 
   if (skip_img_write == 0) {
+    if (verbose) { // DEBUG
+      for(unsigned int i = 0; i < num_blocks*num_threads && i < 8; i++)
+	{
+	  printf("Data: %08x - %03u %03u %03u\n",
+		 data[i], GET_R(data[i]), GET_G(data[i]), GET_B(data[i]));
+	}
+    }
+
     // Write the image back out
     write_image(out_fn, data, width, height);
   }
