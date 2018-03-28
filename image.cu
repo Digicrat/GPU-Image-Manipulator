@@ -18,6 +18,7 @@ typedef enum ImageActions_t {
   MODE_FLIP_VER,
   MODE_STEG_EN, // Steganographic Encryption of a Message
   MODE_STEG_DE, // Steganographic Decryption of a Message
+  MODE_SPRITE_ANIM,
   MODE_UNSPECIFIED
 } ImageActions_t;
 
@@ -46,7 +47,18 @@ typedef enum ImageActions_t {
 #define GET_Gxy(buf,x,y) (GET_G(buf[y*width+x]))
 #define GET_Bxy(buf,x,y) (GET_B(buf[y*width+x]))
 
-// Write cpu_data as a PPM-formatted image (http://netpbm.sourceforge.net/doc/ppm.html)
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+  if (code != cudaSuccess)
+    {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+    }
+}
+
+/** Write cpu_data as a PPM-formatted image (http://netpbm.sourceforge.net/doc/ppm.html)
+ */
 void write_image(char *fn, uint32_t *buf, unsigned int width, unsigned int height)
 {
   FILE *f;
@@ -515,7 +527,6 @@ int steg_image_en(uint32_t num_threads, uint32_t num_blocks,
 		  uint32_t *data, uint32_t data_length,
 		  char* msg, MemMode_t memMode)
 {
-  int status;
   int msgLen = strlen(msg);
 
   /* Declare pointers for GPU based params */
@@ -563,6 +574,171 @@ int steg_image_en(uint32_t num_threads, uint32_t num_blocks,
   return 1;
 }
 
+/** Overlay sprite onto image starting at given x offset
+ *   This version will generate num_frames images, waiting on
+ *   an event in between executions.
+ *    Note: For proper operation, num_threads=width and numBlocks=height of
+ *      src image.
+ *   Pixels corresponding to the chromakey will not be copied over.
+ */
+__global__
+void gpu_img_sprite(unsigned int* src, unsigned int* sprite,
+		    unsigned int sprite_width, unsigned int sprite_height,
+		    unsigned int* gpu_out,
+		    unsigned int const sprite_offset
+		    )
+{
+  const unsigned int thread_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+  int sprite_x, sprite_y;
+  unsigned int sprite_idx;
+  
+  sprite_x = threadIdx.x - sprite_offset;
+  sprite_y = blockIdx.x - sprite_offset;
+  sprite_idx = (sprite_y * sprite_height) + sprite_x;
+
+  if (sprite_x < 0 || sprite_y < 0 || sprite_y > sprite_width || sprite_x > sprite_height || sprite[sprite_idx] == chromakey) {
+    gpu_out[thread_idx] = src[thread_idx];
+  } else {
+    gpu_out[thread_idx] = sprite[sprite_idx];
+  }
+}
+
+
+/* Simple sprite animation.  The given sprite image will be overlaid
+ *  on the base image. The first image will start at position 0,0, with
+ *  the starting column incremented for each pass.  One image will be generated for each width-1 pixels.
+ * The resulting images can be converted into an animated gif using the convert tool:
+ *  convert -delay 20 -loop 0 out_fn* out_fn.gif
+ *  WARNING: This conversion process can be slow. Ideally, this could be sped up
+ *   by utilizing CUDA to directly convert files into GIF format and letting the
+ *   CPU assemble the results into an animated GIF ... but one step at a time.
+ */
+int img_sprite_anim(uint32_t num_threads, uint32_t num_blocks,
+		    uint32_t *data, uint32_t data_length,
+		    uint32_t width, uint32_t height,
+		    char* sprite_fn, char* out_fn_base
+		    )
+{
+  char out_fn[64];
+  uint32_t num_images = 0;
+  uint32_t *sprite_data = NULL;
+  uint32_t sprite_length=0, sprite_height, sprite_width;
+  uint32_t *gpu_src, *gpu_sprite, *gpu_out1, *gpu_out2;
+  uint32_t *cpu_out1, *cpu_out2;
+  cudaEvent_t start1, stop1, start2, stop2;
+  cudaStream_t stream1, stream2;
+  int status;
+  
+  // Load sprite image
+  status = load_image(sprite_fn,
+		      &sprite_data, &sprite_length, &sprite_height, &sprite_width,
+		      MEM_HOST_PINNED);
+  if (status < 0) {
+    printf("ERROR: Unable to load sprite\n");
+    return -1;
+  }
+  
+  // Calculate number of images to generate (must be even to simplify logic)
+  num_images = width - (width&1);
+  
+  // Initialize remaining CUDA resources
+  cudaMallocHost((void **)&cpu_out1, data_length);
+  cudaMallocHost((void **)&cpu_out2, data_length);
+
+  cudaMalloc((void **)&gpu_sprite, data_length);
+  cudaMemcpy( gpu_sprite, sprite_data, sprite_length, cudaMemcpyHostToDevice );
+  cudaMalloc((void **)&gpu_src, data_length);
+  cudaMemcpy( gpu_src, data, data_length, cudaMemcpyHostToDevice );
+  cudaMalloc((void **)&gpu_out1, data_length);
+  cudaMalloc((void **)&gpu_out2, data_length);
+  
+  // Create events
+  cudaEventCreate(&start1);
+  cudaEventCreate(&start2);
+  cudaEventCreate(&stop1);
+  cudaEventCreate(&stop2);
+
+  // Create streams
+  cudaStreamCreate(&stream1);
+  cudaStreamCreate(&stream2);
+
+  // Start Initial Kernels
+  cudaEventRecord(start1, stream1);
+  gpu_img_sprite<<<num_blocks,num_threads,0,stream1>>>(gpu_src,gpu_sprite,
+						       sprite_width,sprite_height,
+						       gpu_out1,
+						       0);
+  cudaMemcpyAsync( cpu_out1, gpu_out1, data_length, cudaMemcpyDeviceToHost, stream1 );
+  cudaEventRecord(stop1, stream1);
+  cudaEventRecord(start2, stream2);
+  gpu_img_sprite<<<num_blocks,num_threads,0,stream2>>>(gpu_src,gpu_sprite,
+						       sprite_width,sprite_height,
+						       gpu_out2,
+						       1);
+  cudaMemcpyAsync( cpu_out2, gpu_out2, data_length, cudaMemcpyDeviceToHost, stream2 );
+  cudaEventRecord(stop2, stream2);
+  
+  // Generate Frames
+  for(int i = 0; i < num_images/2; i++)
+  {
+    cudaStreamSynchronize(stream1);
+
+    // Write buffer 0 to disk
+    sprintf(out_fn, "%s[%04d].ppm", out_fn_base, 2*i);
+    write_image(out_fn, cpu_out1, width, height);
+
+    // Restart stream1 for next iteration (if this isn't the last iteration)
+    if (i+1 != num_images/2) {
+      cudaEventRecord(start1, stream1);
+      gpu_img_sprite<<<num_blocks,num_threads,0,stream1>>>(gpu_src,gpu_sprite,
+							   sprite_width,sprite_height,
+							   gpu_out1,
+							   2*(i+1));
+
+      // Copy data to CPU from buffer 0
+      cudaMemcpyAsync( cpu_out1, gpu_out1, data_length, cudaMemcpyDeviceToHost, stream1 );
+      cudaEventRecord(stop1, stream1);
+    }
+
+    cudaStreamSynchronize(stream2);
+    
+    // Write buffer 2 to disk
+    sprintf(out_fn, "%s[%04d].ppm", out_fn_base, 2*i+1);
+    write_image(out_fn, cpu_out2, width, height);
+
+    // Start next kernel
+    if (i+1 != num_images/2) {
+      cudaEventRecord(start2, stream2);
+      gpu_img_sprite<<<num_blocks,num_threads,0,stream2>>>(gpu_src,gpu_sprite,
+							   sprite_width,sprite_height,
+							   gpu_out2,
+							   1+(2*(i+1)));
+
+      // Copy data to CPU from buffer 0
+      cudaMemcpyAsync( cpu_out2, gpu_out2, data_length, cudaMemcpyDeviceToHost, stream2 );
+      cudaEventRecord(stop2, stream2);
+    }
+    
+    
+  }
+
+  // Cleanup
+  // free CPU+GPU output buffers
+  cudaFree(gpu_out1);
+  cudaFree(gpu_out2);
+  cudaFreeHost(cpu_out1);
+  cudaFreeHost(cpu_out2);
+  
+  // free Sprite buffers
+  cudaFree(gpu_sprite);
+  cudaFreeHost(sprite_data);
+  
+  // Note: main fn will free main image cpu buffer
+  cudaFree(gpu_src);
+
+  return 1;
+}
+		    
 
 int main(int argc, char* argv[])
 {
@@ -694,32 +870,46 @@ int main(int argc, char* argv[])
   printf("Processing image %s fn of size (%d x %d) with %d threads and %d blocks\n",
 	 fn, height, width, num_threads, num_blocks);
 
-  // Simple Image Processing: Merge with a mask to "brighten"
-  while(n > 0) { // Number of times to repeat (for better timing metrics)
-    switch(mode) {
-    case MODE_PIPE_MASK:
-    case MODE_MASK:
-    case MODE_FLIP_HOR:
-    case MODE_FLIP_VER:
-      mod_image(num_threads, num_blocks, verbose, data, mode);
-      break;
-    case MODE_STEG_DE:
-      steg_image_de(num_threads, num_blocks, data, data_length, out_fn, memMode);
-      skip_img_write = 1;
-      break;
-    case MODE_STEG_EN:
-      if (msg == NULL) {
-	printf("ERROR: Encryption needs a message to encrypt!\n");
+  if (mode == MODE_SPRITE_ANIM)
+  {
+    if (memMode != MEM_HOST_PINNED) {
+      printf("ERROR: Pinned memory required for this operation\n");
+      return -1;
+    }
+    skip_img_write = 1; // Will be handled by fn
+    // Note: msg = sprite_fn.  out_fn will be appended with [#].ppm
+    img_sprite_anim(num_threads, num_blocks, data,
+		    data_length,
+		    width, height,
+		    msg, out_fn);
+  } else {
+    // Simple Image Processing: Merge with a mask to "brighten"
+    while(n > 0) { // Number of times to repeat (for better timing metrics)
+      switch(mode) {
+      case MODE_PIPE_MASK:
+      case MODE_MASK:
+      case MODE_FLIP_HOR:
+      case MODE_FLIP_VER:
+	mod_image(num_threads, num_blocks, verbose, data, mode);
+	break;
+      case MODE_STEG_DE:
+	steg_image_de(num_threads, num_blocks, data, data_length, out_fn, memMode);
+	skip_img_write = 1;
+	break;
+      case MODE_STEG_EN:
+	if (msg == NULL) {
+	  printf("ERROR: Encryption needs a message to encrypt!\n");
+	  break;
+	}
+	steg_image_en(num_threads, num_blocks, data, data_length, msg, memMode);
+	break;
+      default:
+	printf("ERROR: Mode %d not currently supported. Nothing to do\n", mode);
+	n = 0;
 	break;
       }
-      steg_image_en(num_threads, num_blocks, data, data_length, msg, memMode);
-      break;
-    default:
-      printf("ERROR: Mode %d not currently supported. Nothing to do\n", mode);
-      n = 0;
-      break;
+      n--;
     }
-    n--;
   }
 
   if (skip_img_write == 0) {

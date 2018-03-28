@@ -3,6 +3,7 @@ all: gpu_image
 
 clean:
 	rm -f gpu_image
+	rm LennaAnim*
 
 CFLAGS = --ptxas-options=-v
 
@@ -12,6 +13,12 @@ debug: gpu_image
 gpu_image: image.cu
 	nvcc $(CFLAGS) image.cu -o gpu_image
 
+mod7: gpu_image
+	convert goomba-small.png goomba-small.ppm
+	./gpu_image -m 6 -p -i Lenna.ppm -o LennaAnim -k 0 -M goomba-small.ppm
+
+# Debug:	mogrify -format png LennaAnim*.ppm
+	convert -delay 30 -loop 0 LennaAnim*.ppm LennaAnim.gif
 mod6: gpu_image
 	convert Lenna.png Lenna.ppm
 	@echo "Encode 'Hello Hidden World!'"
@@ -27,6 +34,9 @@ mod6: gpu_image
 	convert Lenna.base.png Lenna.base.conv.ppm
 	@echo "Reading back message:"
 	./gpu_image -i Lenna.ppm -o Lenna.base.conv.ppm -k 4 -m 5
+
+
+
 
 
 mod5: gpu_image
