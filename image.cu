@@ -4,7 +4,25 @@
 #include <stdint.h>
 #include <errno.h>
 
+// CURAND library
+#include <curand.h>
+#include <curand_kernel.h>
+
+// NPP Library
+#include <ImagesNPP.h>
+#include <ImagesCPU.h>
+#include <npp.h>
+#include <nppdefs.h>
+#include <nppi_arithmetic_and_logical_operations.h>
+
 __constant__ uint32_t chromakey = 0x11111111;
+/* NOTE: while above variable is defined in host namespace, it's value
+ *  is not accessible. Trying to access it from the CPU directly will
+ *  not yield any errors or warnings, but will always read with a 0-value.
+ * The value can be read using cudaMemcpyFromSymbol(), but in most cases it's
+ *   simpler to store a second copy in host memory for convenience.
+ */
+uint32_t host_chromakey = 0x11111111;
 
 typedef enum MemMode_t {
   MEM_HOST_PAGEABLE,
@@ -19,6 +37,9 @@ typedef enum ImageActions_t {
   MODE_STEG_EN, // Steganographic Encryption of a Message
   MODE_STEG_DE, // Steganographic Decryption of a Message
   MODE_SPRITE_ANIM,
+  MODE_ADD_RAND_NOISE,
+  MODE_NPP_AND_MASK,
+  MODE_NPP_OR_MASK,
   MODE_UNSPECIFIED
 } ImageActions_t;
 
@@ -38,6 +59,10 @@ typedef enum ImageActions_t {
 #define G_MASK 0x0000FF00
 #define B_MASK 0x00FF0000
 #define S_MASK 0xFF000000 // reserved (ie: alpha channel)
+
+#define SET_R(data,value) ((value&0xFF)|(data&~R_MASK))
+#define SET_G(data,value) (((value&0xFF)<<G_SHIFT)|(data&~G_MASK))
+#define SET_B(data,value) (((value&0xFF)<<B_SHIFT)|(data&~B_MASK))
 
 #define GET_R(data) (data & R_MASK)
 #define GET_G(data) ((data & G_MASK) >> G_SHIFT)
@@ -278,6 +303,31 @@ void flip_image_col(uint32_t *data)
     
 }
 
+/**
+ *   add random noise to the image with per-channel noise bound
+ *    by the defined max noise levels (in chromakey).
+ */
+__global__
+void add_noise(uint32_t *data, unsigned int seed)
+{
+  const unsigned int thread_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+  unsigned int noise;
+  char ch_noise;
+
+  curandState_t state;
+  curand_init(thread_idx*seed,0,0,&state);
+  
+  noise = curand(&state);
+
+  ch_noise = GET_R(noise) % GET_R(chromakey);
+  noise = SET_R(noise,ch_noise);
+  ch_noise = GET_G(noise) % GET_G(chromakey);
+  noise = SET_G(noise,ch_noise);
+  ch_noise = GET_B(noise) % GET_B(chromakey);
+  noise = SET_B(noise,ch_noise);  
+
+  data[thread_idx] += noise;
+}
 
 void mod_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
 		uint32_t* data, ImageActions_t const mode)
@@ -300,6 +350,9 @@ void mod_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
   /* Execute our kernel */
   cudaEventRecord(start);
   switch(mode) {
+  case MODE_ADD_RAND_NOISE:
+    add_noise<<<num_blocks, num_threads>>>(gpu_data, time(NULL));
+    break;
   case MODE_PIPE_MASK:
   case MODE_MASK:
     key_merge<<<num_blocks, num_threads>>>(gpu_data, mode);
@@ -339,7 +392,7 @@ void mod_image(unsigned int num_threads, unsigned int num_blocks, int verbose,
   cudaEventSynchronize(stop);
   float milliseconds = 0;
   cudaEventElapsedTime(&milliseconds, start, stop);
-  printf("mask_merge CUDA operation took %f ms\n", milliseconds);
+  printf("mod_image CUDA operation took %f ms\n", milliseconds);
 
   // Report if any errors occurred during CUDA operations
   cudaError_t err = cudaGetLastError();
@@ -738,7 +791,41 @@ int img_sprite_anim(uint32_t num_threads, uint32_t num_blocks,
 
   return 1;
 }
-		    
+
+/** Perform Image Processing functions using the NPP Library NOTE:
+ *   While we are loading 3-channel 8-bit RGB images, we will parse as
+ *   4-channel images since that data format for NPP matches the
+ *   format already used in this file.  The fourth channel (nominally
+ *   alpha) is simply ignored with our current import/export
+ *   functions.
+ */
+void npp_mod_image(uint32_t height, uint32_t width, uint32_t *data, ImageActions_t const mode)
+{
+  NppiSize size = {width, height};
+  NppStatus status;
+
+  npp::ImageCPU_8u_C4 oHost(width, height);
+  memcpy(oHost.data(), data, (width*height*sizeof(uint32_t)) );
+  npp::ImageNPP_8u_C4 oDevice(oHost);
+  printf("chromakey = %x\n", chromakey);
+  
+  switch(mode) {
+  case MODE_NPP_AND_MASK:
+    status = nppiAndC_8u_C4IR((const Npp8u *)&host_chromakey, oDevice.data(), oDevice.pitch(), size);
+    break;
+  case MODE_NPP_OR_MASK:
+    status = nppiOrC_8u_C4IR((const Npp8u *)&host_chromakey, oDevice.data(), oDevice.pitch(), size);
+  }
+
+  if (status < 0) {
+    printf("ERROR: NPP Operation failed with %i\n");
+  }
+
+  oDevice.copyTo(oHost.data(), oHost.pitch());
+  memcpy(data, oHost.data(), (width*height*sizeof(uint32_t)) );
+  //oDevice.copyTo((Npp8u*)data, oDevice.pitch());
+  nppiFree(oDevice.data());
+}
 
 int main(int argc, char* argv[])
 {
@@ -774,8 +861,8 @@ int main(int argc, char* argv[])
   while((c = getopt(argc, argv, "phvi:t:n:o:k:m:M:")) != -1) {
     switch(c) {
     case 'k':
-      tmp = atoi(optarg);
-      cudaMemcpyToSymbol(chromakey, &tmp, sizeof(int));
+      host_chromakey = atoi(optarg);
+      cudaMemcpyToSymbol(chromakey, &host_chromakey, sizeof(int));
       break;
     case 'M': // ASCII string argument
       msg = optarg;
@@ -816,6 +903,10 @@ int main(int argc, char* argv[])
       printf("\t          4  Steganographic Encryption. Specify ASCII message with '-M'\n");
       printf("\t                 Optionally use key (-k) as a cipher\n");
       printf("\t          5  Stegonographic Decryption. ASCII message will be output to STDOUT\n");
+      printf("\t          6  Sprite Animation.\n");
+      printf("\t          7  Add Random noise (via curand) to image.\n");
+      printf("\t          8  NPP Library based AND operation. Equivalent to mode 0\n");
+      printf("\t          9  NPP Library based OR operation. Equivalent to mode 1\n");
       printf("\t                 Specify the same key as when encoded.\n");
       printf("\t                 Input image (-i) should be the unaltered image.\n");
       printf("\t                 Output image (-o) should be the previously altered image.\n");
@@ -890,6 +981,7 @@ int main(int argc, char* argv[])
       case MODE_MASK:
       case MODE_FLIP_HOR:
       case MODE_FLIP_VER:
+      case MODE_ADD_RAND_NOISE:
 	mod_image(num_threads, num_blocks, verbose, data, mode);
 	break;
       case MODE_STEG_DE:
@@ -902,6 +994,10 @@ int main(int argc, char* argv[])
 	  break;
 	}
 	steg_image_en(num_threads, num_blocks, data, data_length, msg, memMode);
+	break;
+      case MODE_NPP_OR_MASK:
+      case MODE_NPP_AND_MASK:
+	npp_mod_image(height, width, data, mode);
 	break;
       default:
 	printf("ERROR: Mode %d not currently supported. Nothing to do\n", mode);

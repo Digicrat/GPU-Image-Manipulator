@@ -5,13 +5,41 @@ clean:
 	rm -f gpu_image
 	rm LennaAnim*
 
-CFLAGS = --ptxas-options=-v
+# nppial is NPP Arithmetic and Logic Library
+# nppisu is NPP core functions such as nppiMalloc and Free
+# -IUtilNPP contains helper classes for managing NPP
+CFLAGS = --ptxas-options=-v -lnppial -lnppisu -IUtilNPP
 
 debug: CFLAGS += -g -G -Xcompiler -rdynamic -lineinfo
 debug: gpu_image
 
 gpu_image: image.cu
 	nvcc $(CFLAGS) image.cu -o gpu_image
+
+mod9: gpu_image
+	@echo "Comparison of Manual CUDA Logical Operations with NPP-Based Ones"
+	./gpu_image -i Lenna.ppm -o Lenna.parsed2.ppm -k 255
+	convert Lenna.parsed2.ppm Lenna.parsed2.png
+
+	./gpu_image -i Lenna.ppm -o Lenna.parsed2.npp.ppm -k 255 -m 8
+	convert Lenna.parsed2.npp.ppm Lenna.parsed2.npp.png
+
+	./gpu_image -i Lenna.ppm -o Lenna.parsed3.ppm -k 255 -m 1
+	convert Lenna.parsed3.ppm Lenna.parsed3.png
+
+	./gpu_image -i Lenna.ppm -o Lenna.parsed3.npp.ppm -k 255 -m 9
+	convert Lenna.parsed3.npp.ppm Lenna.parsed3.npp.png
+
+
+
+mod8: gpu_image
+	convert Lenna.png Lenna.ppm
+	./gpu_image -m 7 -i Lenna.ppm -o Lenna.noise1.ppm
+	./gpu_image -m 7 -i Lenna.ppm -o Lenna.noise2.ppm -k 0x00FFFFFF
+	./gpu_image -m 7 -i Lenna.ppm -o Lenna.noise3.ppm -k 0x00FFFFFF -n 100
+	convert Lenna.noise1.ppm Lenna.noise1.png
+	convert Lenna.noise2.ppm Lenna.noise2.png
+	convert Lenna.noise3.ppm Lenna.noise3.png
 
 mod7: gpu_image
 	convert goomba-small.png goomba-small.ppm
