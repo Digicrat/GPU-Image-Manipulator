@@ -1,4 +1,6 @@
-
+# TODO: Import OpenCL version and merge into mod configs for side-by-side comparison
+# TODO: Consider adding a third source for native CPU implementation
+#   Note: We could, with work, use precompiler macros to build all 3 in a single file, but splitting is easier to read
 all: gpu_image
 
 clean:
@@ -8,13 +10,62 @@ clean:
 # nppial is NPP Arithmetic and Logic Library
 # nppisu is NPP core functions such as nppiMalloc and Free
 # -IUtilNPP contains helper classes for managing NPP
-CFLAGS = --ptxas-options=-v -lnppial -lnppisu -IUtilNPP
+CFLAGS = --ptxas-options=-v -lnppial -lnppisu -IUtilNPP -std=c++11
 
 debug: CFLAGS += -g -G -Xcompiler -rdynamic -lineinfo
 debug: gpu_image
 
-gpu_image: image.cu
-	nvcc $(CFLAGS) image.cu -o gpu_image
+gpu_image: image.cu image.cpp
+	nvcc $(CFLAGS) image.cpp image.cu -o gpu_image
+
+mod11: gpu_image
+	convert mario.jpg mario.ppm
+
+	@echo "3x3 Identity CUDA Convolution (mario.identity3.jpg)"
+	./gpu_image -o mario.identity3.ppm -i mario.ppm --kw 3 --kh 3 --kernel "0,0,0;0,1,0;0,0,0"
+	convert mario.identity3.ppm mario.identity3.jpg
+
+	@echo "7x7 Identity CUDA Convolution (mario.identity7.jpg)"
+	./gpu_image -o mario.identity7.ppm -i mario.ppm --kw 7 --kh 7 --kernel "0, 0, 0, 0, 0, 0, 0;0, 0, 0, 0, 0, 0, 0;0, 0, 0,\
+ 0, 0, 0, 0;0, 0, 0, 1, 0, 0, 0;0, 0, 0, 0, 0, 0, 0;0, 0, 0, 0, 0, 0, 0;0, 0, 0, 0, 0, 0, 0 "
+	convert mario.identity3.ppm mario.identity3.jpg
+
+	@echo "7x7 CUDA Convolution (mario.con7.jpg)"
+	./gpu_image -o mario.con7.ppm -i mario.ppm --kw 7 --kh 7 --kernel "1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1\
+, 1, 1;1, 1, 1, 0, 1, 1, 1;1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1, 1, 1 "
+	convert mario.con7.ppm mario.con7.jpg
+
+#         @echo "Default OpenCL Convolution Test"
+#         time ./Convolution2
+#         convert mario.convolved.ppm mario.convoled.jpg
+
+#         @echo "3x3 Identity OpenCL Convolution (mario.identity3.jpg)"
+#         ./Convolution2 -o mario.identity3.ppm -i mario.ppm --kw 3 --kh 3 -k "0,0,0;0,1,0;0,0,0"
+#         convert mario.identity3.ppm mario.identity3.jpg
+
+#         @echo "7x7 Identity OpenCL Convolution (mario.identity7.jpg)"
+#         ./Convolution2 -o mario.identity7.ppm -i mario.ppm --kw 7 --kh 7 -k "0, 0, 0, 0, 0, 0, 0;0, 0, 0, 0, 0, 0, 0;0, 0, 0,\
+#  0, 0, 0, 0;0, 0, 0, 1, 0, 0, 0;0, 0, 0, 0, 0, 0, 0;0, 0, 0, 0, 0, 0, 0;0, 0, 0, 0, 0, 0, 0 "
+#         convert mario.identity3.ppm mario.identity3.jpg
+
+#         @echo "7x7 OpenCL Convolution (mario.con7.jpg)"
+#         ./Convolution2 -o mario.con7.ppm -i mario.ppm --kw 7 --kh 7 -k "1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1\
+# , 1, 1;1, 1, 1, 0, 1, 1, 1;1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1, 1, 1;1, 1, 1, 1, 1, 1, 1 "
+#         convert mario.con7.ppm mario.con7.jpg
+
+
+	@echo "Example Identity Convolution using ImageMagick"
+	time convert mario.jpg -define showkernel=1 -morphology Convolve '7x7: 0,0,0,0,0,0,0   0,0,0,0,0,0,0   0,0,0,0,0,0,0  0,0,0,1,0,0,0   0,0,0,0,0,0,0   0,0,0,0,0,0,0   0,0,0,0,0,0,0' \
+		mario.magick.ident.convolved.png
+
+	@echo "Example Invert Convolution using ImageMagick"
+	convert mario.jpg -define showkernel=1 \
+		-morphology Convolve \
+		'7x7: 1,1,1,1,1,1,1   1,1,1,1,1,1,1   1,1,1,1,1,1,1  1,1,1,0,1,1,1   1,1,1,1,1,1,1   1,1,1,1,1,1,1   1,1,1,1,1,1,1' \
+		mario.magick.inv.convolved.png
+
+
+
 
 mod9: gpu_image
 	@echo "Comparison of Manual CUDA Logical Operations with NPP-Based Ones"

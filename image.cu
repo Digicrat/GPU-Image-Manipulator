@@ -15,6 +15,10 @@
 #include <nppdefs.h>
 #include <nppi_arithmetic_and_logical_operations.h>
 
+// Local includes
+#include "image.hpp"
+#include "cxxopts.hpp"
+
 __constant__ uint32_t chromakey = 0x11111111;
 /* NOTE: while above variable is defined in host namespace, it's value
  *  is not accessible. Trying to access it from the CPU directly will
@@ -23,11 +27,6 @@ __constant__ uint32_t chromakey = 0x11111111;
  *   simpler to store a second copy in host memory for convenience.
  */
 uint32_t host_chromakey = 0x11111111;
-
-typedef enum MemMode_t {
-  MEM_HOST_PAGEABLE,
-  MEM_HOST_PINNED
-} MemMode_t;
 
 typedef enum ImageActions_t {
   MODE_PIPE_MASK = 0,
@@ -40,37 +39,10 @@ typedef enum ImageActions_t {
   MODE_ADD_RAND_NOISE,
   MODE_NPP_AND_MASK,
   MODE_NPP_OR_MASK,
+  MODE_GPU_CONVOLUTION,
   MODE_UNSPECIFIED
 } ImageActions_t;
 
-
-/* Image Generation Configuration
- *  We'll use a simple RGB color scheme
- *  This can be extended to other schemes (ie: sRGB, IAB) if needed later
- */
-// 10-bit color space -- good in theory, but harder to display in a useful format
-// Note: We still reserve 10-bits per channel, but only use 8 when outputting
-#define RGB_COMPONENT_COLOR 255
-#define MAX_COLOR RGB_COMPONENT_COLOR
-#define R_SHIFT 0
-#define G_SHIFT 8
-#define B_SHIFT 16
-#define R_MASK 0x000000FF
-#define G_MASK 0x0000FF00
-#define B_MASK 0x00FF0000
-#define S_MASK 0xFF000000 // reserved (ie: alpha channel)
-
-#define SET_R(data,value) ((value&0xFF)|(data&~R_MASK))
-#define SET_G(data,value) (((value&0xFF)<<G_SHIFT)|(data&~G_MASK))
-#define SET_B(data,value) (((value&0xFF)<<B_SHIFT)|(data&~B_MASK))
-
-#define GET_R(data) (data & R_MASK)
-#define GET_G(data) ((data & G_MASK) >> G_SHIFT)
-#define GET_B(data) ((data & B_MASK) >> B_SHIFT)
-
-#define GET_Rxy(buf,x,y) (GET_R(buf[y*width+x]))
-#define GET_Gxy(buf,x,y) (GET_G(buf[y*width+x]))
-#define GET_Bxy(buf,x,y) (GET_B(buf[y*width+x]))
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -82,167 +54,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
     }
 }
 
-/** Write cpu_data as a PPM-formatted image (http://netpbm.sourceforge.net/doc/ppm.html)
- */
-void write_image(char *fn, uint32_t *buf, unsigned int width, unsigned int height)
-{
-  FILE *f;
-  uint8_t c[3];
 
-  printf("Preparing to output image to %s\n", fn);
-
-  f = fopen(fn, "wb");
-  if (f == NULL) {
-    perror("Unable to write output file\n");
-    return;
-  }
-  fprintf(f, "P6\n%i %i %i\n", width, height, MAX_COLOR);
-  for (int y=0; y<height; y++) {
-    for (int x=0; x<width; x++) {
-      c[0] = GET_Rxy(buf, x,y);
-      c[1] = GET_Gxy(buf, x,y);
-      c[2] = GET_Bxy(buf, x,y);
-      fwrite(c, 1, 3, f);
-      //printf("%d,%d = %d %d %d\n", x,y,c[0],c[1],c[2]);
-    }
-  }
-  fclose(f);
-}
-
-/** Load PPM-format image into memory
- * @param[in] fn Filename to load
- * @param[inout] buff Buffer to load into.  If NULL, buffer will be malloced
- * @param[inout] buf_size Pointer to a variable containing the length of the provided buffer (in int32 elements), if applicable. 
- *               Otherwise, will be set to the length of the allocated buffer.
- * @param[out] length of loaded image (in pixels)
- * @param[out] width of loaded image.
- * @return 1 on success, -1 on failure.
- */
-int load_image(char* fn, uint32_t **buff, uint32_t *buf_length, uint32_t *height, uint32_t *width, MemMode_t mem_mode)
-{
-  FILE *fp;
-  int c, rgb_comp_color, r, g, b;
-  uint32_t size;
-  char tmp[16];
-  cudaError_t cuda_status;
-
-  printf("Loading file %s\n", fn);
-  fflush(stdout);
-  fp = fopen(fn, "rb");
-  if (!fp) {
-    printf("Unable to open file %s\n", fn);
-    return -1;
-  }
-
-  //read image format
-  if (!fgets(tmp, sizeof(tmp), fp)) {
-    perror(fn);
-    return -1;
-  }
-
-  //check the image format
-  if (tmp[0] != 'P' || tmp[1] != '6') {
-    perror("Invalid image format (must be 'P6')\n");
-    return -1;
-  }
-
-  //check for comments
-  c = getc(fp);
-  while (c == '#') {
-    while (getc(fp) != '\n') ;
-    c = getc(fp);
-  }
-  ungetc(c, fp); // put the non-comment character back
-
-  //read image size information
-  if (fscanf(fp, "%d %d", height, width) != 2) {
-    fprintf(stderr,"Invalid image size (error loading '%s')\n", fn);
-    exit(1);
-  }
-  size = *height * *width * sizeof(int32_t);
-
-  //read rgb component
-  if (fscanf(fp, "%d", &rgb_comp_color) != 1) {
-    fprintf(stderr, "Invalid rgb component (error loading '%s')\n", fn);
-    exit(1);
-  }
-
-  //check rgb component depth
-  if (rgb_comp_color!= RGB_COMPONENT_COLOR) {
-    fprintf(stderr, "'%s' does not have 8-bits components\n", fn);
-    exit(1);
-  }
-
-  // Verify or allocate memory
-  if (buff == NULL || buf_length==NULL || height==NULL || width==NULL) {
-    perror("Invalid parameters\n");
-    return -1;
-  } else if (*buff == NULL) {
-    // Buffer not defined, malloc one
-    switch(mem_mode) {
-    case MEM_HOST_PAGEABLE:
-      *buff = (unsigned int*)malloc(size);//1048576); // ERROR: Under Windows/cygwin, this fails unless value is hard-coded...
-      if (*buff == NULL) {
-	printf("ERROR: Malloc(%d) failed with %s\n", size, strerror(errno));
-	return -1;
-      }
-      break;
-    case MEM_HOST_PINNED:
-      cuda_status = cudaMallocHost((void **)buff, size );
-      if (cuda_status != cudaSuccess) {
-	printf("ERROR: CudaMallocHost failed with %x\n", cuda_status);
-	return -1;
-      }
-      break;
-  default:
-      fprintf(stderr, "Invalid memory mode selected\n");
-      exit(1);
-    }
-    *buf_length = size;
-    printf("Allocated buffer for image of length %d\n", size);
-  } else if (*buf_length != NULL && *buf_length < size ) {
-    printf("ERROR: buf_length (%d) undefined or insufficent for image (%d x %d = %d)\n",
-	   buf_length, *height, *width, size);
-    return -1;
-  } else {
-    printf("Using pre-allocated buffer (0x%x)\n", buff);
-  }
-
-  while (fgetc(fp) != '\n') ; // Flush remaining ASCII.
-  
-  //read pixel data from file
-  // NOTE: We could optimize the load process if we allocated a 3-bit*length buffer instead.
-  for(int i = 0; i < size/sizeof(int32_t); i++) {
-    r = getc(fp); g = getc(fp); b = getc(fp);
-    if (r == EOF || g == EOF || b == EOF) {
-      printf("Error loading image '%s' pixel %d\n", fn, i);
-      return -1;
-    }
-    (*buff)[i] = (r & R_MASK) | (g<<G_SHIFT)&G_MASK | (b<<B_SHIFT)&B_MASK;
-
-
-    /*    if (fread(&c, 3, 1, fp) != 3) {
-      printf("Error loading image '%s' pixel %d\n", fn, i);
-      return -1;
-    }
-    (*buff)[i] = c;*/
-    // TODO: We are loading 3-bytes into an int32. Verify that they are loaded as expected into the lower 3-bytes
-  }
-
-  fclose(fp);
-
-#ifdef VERBOSE
-    for(unsigned int i = 0; i < 8; i++)
-      {
-	printf("Data: %08x - %03u %03u %03u\n",
-	       (*buff)[i], GET_R((*buff)[i]), GET_G((*buff)[i]), GET_B((*buff)[i]));
-      }
-#endif
-
-  
-  return 1;
-    
-}
 
 // Pipe two data set values together (bitwise-or)
 __global__
@@ -489,7 +301,7 @@ void gpu_steg_image_de(uint32_t *data, uint32_t *data2, char *msg_out)
 // Simple steganographic message decryption
 int steg_image_de(uint32_t num_threads, uint32_t num_blocks,
 		  uint32_t *data, uint32_t data_length,
-		  char* fn, MemMode_t memMode)
+		  const char* fn, MemMode_t memMode)
 {
   int status;
   uint32_t data2_length=0, height, width;
@@ -578,7 +390,7 @@ int steg_image_de(uint32_t num_threads, uint32_t num_blocks,
 // Simple steganographic message decryption
 int steg_image_en(uint32_t num_threads, uint32_t num_blocks,
 		  uint32_t *data, uint32_t data_length,
-		  char* msg, MemMode_t memMode)
+		  const char* msg, MemMode_t memMode)
 {
   int msgLen = strlen(msg);
 
@@ -656,6 +468,105 @@ void gpu_img_sprite(unsigned int* src, unsigned int* sprite,
   }
 }
 
+/** Simple (Naive) Convolution Example 
+ * Based on https://github.com/bgaster/opencl-book-samples/blob/master/src/Chapter_3/OpenCLConvolution/Convolution.cl
+ *
+ * This simple implementation is not optimized (and therefore more readable).
+ *
+ * This simple implementation requires image and mask to each be square. Image must be small enough to run
+ *   one image row per GPU block.
+ * TODO: Consider breaking width/block limitation
+ * TODO: If requirement remains in place, enforce it 
+**/
+__global__ void gpu_convolve(
+                         unsigned int * const input,
+                         int * const mask,
+                         unsigned int * const output,
+                         const int inputWidth,
+                         const int maskWidth)
+{
+  const int x = threadIdx.x; //get_global_id(0);
+  const int y = blockIdx.x; //get_global_id(1);
+
+  uint sum = 0;
+  for (int r = 0; r < maskWidth; r++)
+    {
+      const int idxIntmp = (y + r) * inputWidth + x;
+
+      for (int c = 0; c < maskWidth; c++)
+        {
+
+          sum += mask[(r * maskWidth)  + c] * input[idxIntmp + c];
+        }
+    }
+
+  output[y * inputWidth + x] = sum;
+}
+void convolve_gpu(unsigned int num_threads, unsigned int num_blocks, int verbose,
+                  uint32_t* data, int32_t *mask, uint32_t mask_width)
+{
+  // Data/Array size defined in this example to match thread/block configuration
+  uint32_t data_size = num_threads*num_blocks*sizeof(uint32_t);
+  uint32_t mask_size = sizeof(int32_t)*mask_width*mask_width;
+  
+  /* Declare pointers for GPU based params */
+  unsigned int *gpu_data, *gpu_out;
+  int *gpu_mask;
+
+  // Define performance metrics
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  
+  cudaMalloc((void **)&gpu_data, data_size);
+  cudaMemcpy( gpu_data, data, data_size, cudaMemcpyHostToDevice );
+  
+  cudaMalloc((void **)&gpu_out, data_size);
+  
+  cudaMalloc((void **)&gpu_mask, mask_size);
+  cudaMemcpy( gpu_mask, mask, mask_size, cudaMemcpyHostToDevice);
+
+  /* Execute our kernel */
+  cudaEventRecord(start);
+  gpu_convolve<<<num_blocks, num_threads>>>(gpu_data, gpu_mask, gpu_out,
+                                            num_threads, // Provided to match original, but not necessary in current config
+                                            mask_width);
+
+  // Wait for the GPU launched work to complete
+  //   (failure to do so can have unpredictable results)
+  cudaThreadSynchronize();	
+  
+  cudaEventRecord(stop);
+  
+  /* Free the arrays on the GPU as now we're done with them */
+  cudaMemcpy( data, gpu_out, data_size, cudaMemcpyDeviceToHost );
+  cudaFree(gpu_data);
+  cudaFree(gpu_out);
+  cudaFree(gpu_mask);
+
+  /* Iterate through the arrays and output */
+  if (verbose) {
+    for(unsigned int i = 0; i < num_blocks*num_threads; i++)
+      {
+	printf("Data: %08x - %03u %03u %03u\n",
+	       data[i], GET_R(data[i]), GET_G(data[i]), GET_B(data[i]));
+      }
+  }
+
+  // Output timing metrics
+  cudaEventSynchronize(stop);
+  float milliseconds = 0;
+  cudaEventElapsedTime(&milliseconds, start, stop);
+  printf("mod_image CUDA operation took %f ms\n", milliseconds);
+
+  // Report if any errors occurred during CUDA operations
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+    printf("Error: %s\n", cudaGetErrorString(err));
+  
+}
+
+
 
 /* Simple sprite animation.  The given sprite image will be overlaid
  *  on the base image. The first image will start at position 0,0, with
@@ -669,7 +580,7 @@ void gpu_img_sprite(unsigned int* src, unsigned int* sprite,
 int img_sprite_anim(uint32_t num_threads, uint32_t num_blocks,
 		    uint32_t *data, uint32_t data_length,
 		    uint32_t width, uint32_t height,
-		    char* sprite_fn, char* out_fn_base
+		    const char* sprite_fn, const char* out_fn_base
 		    )
 {
   char out_fn[64];
@@ -831,20 +742,25 @@ int main(int argc, char* argv[])
 {
   int c;
   int verbose = 0;
-  char *fn = NULL;
-  char *msg = NULL;
-  char out_fn[64] = "out.ppm";
+  std::string fn;
+  std::string msg;
+  std::string out_fn = "out.ppm";
   int status;
-  unsigned int num_blocks = 0;
-  unsigned int num_threads = 0;
+  uint32_t num_blocks = 0;
+  uint32_t num_threads = 0;
   uint32_t *data = NULL;
   uint32_t data_length=0, height, width;
   MemMode_t memMode = MEM_HOST_PAGEABLE;
   int n = 1;
   int tmp;
   ImageActions_t mode = MODE_PIPE_MASK;
+  int mode_int; // Tmp var Because C++11 makes casting difficult
   cudaDeviceProp deviceProp;
   bool skip_img_write = 0;
+  std::string mask_raw = "0 0 0; 0 1 0; 0 0 0";
+  int mask_height = 3; // At present, this must equal width
+  int mask_width = 3;
+  
 
   // Get and output basic device information
   if (cudaSuccess != cudaGetDeviceProperties(&deviceProp, 0)) {
@@ -858,89 +774,98 @@ int main(int argc, char* argv[])
   }
 
   // Parse input arguments
-  while((c = getopt(argc, argv, "phvi:t:n:o:k:m:M:")) != -1) {
-    switch(c) {
-    case 'k':
-      host_chromakey = atoi(optarg);
-      cudaMemcpyToSymbol(chromakey, &host_chromakey, sizeof(int));
-      break;
-    case 'M': // ASCII string argument
-      msg = optarg;
-      break;
-    case 'm':
-      // Parse mode: This is easier than bringing in Boost for more user-friendly command-line parsing.
-      mode = (ImageActions_t)atoi(optarg);
-      break;
-    case 'v':
-      verbose = 1;
-      break;
-     case 'b':
-      num_blocks = atoi(optarg);
-      break;
-    case 't':
-      num_threads = atoi(optarg);
-      break;
-    case 'n':
-      n = atoi(optarg);
-      break;
-    case 'i':
-      fn = optarg;
-      break;
-    case 'o':
-      strncpy(out_fn,optarg,64);
-      break;
-    case 'p':
-      memMode = MEM_HOST_PINNED;
-      break;
-    case 'h':
-      printf("Usage: \n");
-      printf("\t-h     Show this message\n");
-      printf("\t-m #   Specify action to be performed.  Currently supported modes are:\n");
-      printf("\t          0  Image Mask - Bitwise or each pixel value with provided key\n");
-      printf("\t          1  Image Mask - Bitwise and each pixel value with provided key\n");
-      printf("\t          2  Image Flip Horizontal*\n");
-      printf("\t          3  Image Flip Vertical*\n");
-      printf("\t          4  Steganographic Encryption. Specify ASCII message with '-M'\n");
-      printf("\t                 Optionally use key (-k) as a cipher\n");
-      printf("\t          5  Stegonographic Decryption. ASCII message will be output to STDOUT\n");
-      printf("\t          6  Sprite Animation.\n");
-      printf("\t          7  Add Random noise (via curand) to image.\n");
-      printf("\t          8  NPP Library based AND operation. Equivalent to mode 0\n");
-      printf("\t          9  NPP Library based OR operation. Equivalent to mode 1\n");
-      printf("\t                 Specify the same key as when encoded.\n");
-      printf("\t                 Input image (-i) should be the unaltered image.\n");
-      printf("\t                 Output image (-o) should be the previously altered image.\n");
-      printf("\t-k #   Specify key value (ie: chromakey mask or cipher value)\n");
-      printf("\t-v     Enable verbose output mode.\n");
-      printf("\t-i     Select image file to load (ppm format required)\n");
-      printf("\t-o     Select output filename (ppm format)\n");
-      printf("\t-p     Use pinned host memory (cudaMallocHost) instead of the default pageable (malloc).\n");
-      printf("\t-n     Repeat action n times\n");
-      printf("\n\n");
-      printf("* At this time, these operations are intended to operate where\n");
-      printf("  num_threads equals the width of the image. If this is not the case,\n");
-      printf("  output may vary. For example, if num_threads is half the image\n");
-      printf("  width, then the flip function will flip the left and right halves of\n");
-      printf("  the image distinctly as if they are seperate images.  Logic to\n");
-      printf("  handle such cases correctly is reserved for future enhancements.\n");
-      printf("\n");
-      printf("**To keep things simple, at this time operations may assume that images\n");
-      printf("** are square (height=width), and works best when they are a power of 2\n");
-      printf("   or a multiple of 32 (warp size).\n");
-      return 1;
-    default:
-      printf("ERROR: Option %c is not supported, use -h for usage info.\n", (char)c);
-      return -1;
-    }
+  std::string help_modes =
+     "\t          0  Image Mask - Bitwise or each pixel value with provided key\n"
+     "\t          1  Image Mask - Bitwise and each pixel value with provided key\n"
+     "\t          2  Image Flip Horizontal*\n"
+     "\t          3  Image Flip Vertical*\n"
+     "\t          4  Steganographic Encryption. Specify ASCII message with '-M'\n"
+     "\t                 Optionally use key (-k) as a cipher\n"
+     "\t          5  Stegonographic Decryption. ASCII message will be output to STDOUT\n"
+     "\t          6  Sprite Animation.\n"
+     "\t          7  Add Random noise (via curand) to image.\n"
+     "\t          8  NPP Library based AND operation. Equivalent to mode 0\n"
+     "\t          9  NPP Library based OR operation. Equivalent to mode 1\n"
+     "\t                 Specify the same key as when encoded.\n"
+     "\t                 Input image (-i) should be the unaltered image.\n"
+     "\t                 Output image (-o) should be the previously altered image.\n"
+     "\t         10  GPU-Based 'Naive' Convolution using defined kerne.\n"
+    ;
+
+  cxxopts::Options options("GPU Image Processing Demos, CUDA Edition");
+  options.add_options()
+    ("h,kh", "Convolution Kernel Height", cxxopts::value<int>(mask_height))
+    ("w,kw", "Convolution Kernel Width", cxxopts::value<int>(mask_width))
+    ("kernel", "Convolution Kernel of defined dimensions (only square kernels are currently supported), ie: \""+mask_raw+"\"", cxxopts::value<std::string>(mask_raw))
+    ("k,chromakey", "Specify key value (ie: chromakey mask or cipher value)", cxxopts::value<uint32_t>(host_chromakey))
+    ("M,message", "ASCII Message to encode in steganographic mode", cxxopts::value<std::string>(msg))
+    ("v,verbose", "Toggle verbosity (0 off, 1 on, other values reserved)", cxxopts::value<int>(verbose))
+    ("b,blocks", "Number of blocks", cxxopts::value<uint32_t>(num_blocks))
+    ("t,threads", "Number of threads", cxxopts::value<uint32_t>(num_threads))
+    ("i,input", "Input filename (PPM format)", cxxopts::value<std::string>(fn))
+    ("o,output", "Output filename (PPM format)", cxxopts::value<std::string>(out_fn))
+    ("p,pinned", "Use PINNED memory where applicable")
+    ("m,mode", "Specify action to be performed.  Currently supported modes are:\n"+help_modes, cxxopts::value<int>(mode_int))
+    ("n", "Number of repetitions", cxxopts::value<int>(n))
+    ;
+
+  auto result = options.parse(argc, argv);
+  cudaMemcpyToSymbol(chromakey, &host_chromakey, sizeof(int));
+
+  if (result.count("mode"))
+  {
+    mode = static_cast<ImageActions_t>(mode_int);
+  } 
+
+  if (result.count("pinned"))
+  {
+    memMode = MEM_HOST_PINNED;
   }
 
-  if (fn == NULL) {
+  // Parse the kernel/mask
+  int32_t mask[mask_width*mask_height]; // Because passing a 2D array around is more complex than it's worth
+  std::vector<std::string> elems = split(mask_raw);
+  if (elems.size() != mask_height*mask_width) {
+    std::cout << "ERROR: Invalid kernel defined\n";
+    return -1;
+  } else {
+    printf("Convolution Kernel %d x %x\n", mask_height, mask_width);
+    for(int i = 0; i < (mask_height*mask_width); i++) {
+      mask[i] = atoi(elems[i].c_str());
+      printf("%i ", mask[i]);
+
+      if ((i+1) % mask_width == 0) {
+        printf("\n");
+      }
+    }
+    printf("\n");
+  }
+  
+  if (result.count("help"))
+  {
+    std::cout << options.help({"", "Group"}) << std::endl;
+    printf("\n\n");
+    printf("* At this time, these operations are intended to operate where\n");
+    printf("  num_threads equals the width of the image. If this is not the case,\n");
+    printf("  output may vary. For example, if num_threads is half the image\n");
+    printf("  width, then the flip function will flip the left and right halves of\n");
+    printf("  the image distinctly as if they are seperate images.  Logic to\n");
+    printf("  handle such cases correctly is reserved for future enhancements.\n");
+    printf("\n");
+    printf("**To keep things simple, at this time operations may assume that images\n");
+    printf("** are square (height=width), and works best when they are a power of 2\n");
+    printf("   or a multiple of 32 (warp size).\n");
+    exit(0);
+  }
+
+
+  if (fn.length()==0) {
     perror("ERROR: Filename (-i) required for input\n");
     return -1;
   }
 
   // Load image
-  status = load_image(fn, &data, &data_length, &height, &width, memMode);
+  status = load_image(fn.c_str(), &data, &data_length, &height, &width, memMode);
   if (status < 0) {
     return -1;
   }
@@ -972,7 +897,7 @@ int main(int argc, char* argv[])
     img_sprite_anim(num_threads, num_blocks, data,
 		    data_length,
 		    width, height,
-		    msg, out_fn);
+		    msg.c_str(), out_fn.c_str());
   } else {
     // Simple Image Processing: Merge with a mask to "brighten"
     while(n > 0) { // Number of times to repeat (for better timing metrics)
@@ -985,20 +910,22 @@ int main(int argc, char* argv[])
 	mod_image(num_threads, num_blocks, verbose, data, mode);
 	break;
       case MODE_STEG_DE:
-	steg_image_de(num_threads, num_blocks, data, data_length, out_fn, memMode);
+	steg_image_de(num_threads, num_blocks, data, data_length, out_fn.c_str(), memMode);
 	skip_img_write = 1;
 	break;
       case MODE_STEG_EN:
-	if (msg == NULL) {
+	if (msg.length() == 0) {
 	  printf("ERROR: Encryption needs a message to encrypt!\n");
 	  break;
 	}
-	steg_image_en(num_threads, num_blocks, data, data_length, msg, memMode);
+	steg_image_en(num_threads, num_blocks, data, data_length, msg.c_str(), memMode);
 	break;
       case MODE_NPP_OR_MASK:
       case MODE_NPP_AND_MASK:
 	npp_mod_image(height, width, data, mode);
 	break;
+      case MODE_GPU_CONVOLUTION:
+        convolve_gpu(num_threads, num_blocks, verbose, data, mask, mask_width);
       default:
 	printf("ERROR: Mode %d not currently supported. Nothing to do\n", mode);
 	n = 0;
@@ -1018,7 +945,7 @@ int main(int argc, char* argv[])
     }
 
     // Write the image back out
-    write_image(out_fn, data, width, height);
+    write_image(out_fn.c_str(), data, width, height);
   }
   
   switch(memMode) {
