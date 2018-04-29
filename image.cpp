@@ -180,4 +180,20 @@ int load_image(const char* fn, uint32_t **buff, uint32_t *buf_length, uint32_t *
     
 }
 
-  
+void free_image(uint32_t *buf, MemMode_t mem_mode)
+{
+    switch(mem_mode) {
+    case MEM_HOST_PAGEABLE:
+      free(buf);
+      break;
+#ifdef __NVCC__
+    case MEM_HOST_PINNED:
+      cudaFreeHost(buf);
+      break;
+#endif
+  default:
+    fprintf(stderr, "Invalid/unsupported memory mode %d selected\n", mem_mode);
+      exit(1);
+    }
+
+}

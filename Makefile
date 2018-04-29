@@ -1,7 +1,7 @@
 # TODO: Import OpenCL version and merge into mod configs for side-by-side comparison
 # TODO: Consider adding a third source for native CPU implementation
 #   Note: We could, with work, use precompiler macros to build all 3 in a single file, but splitting is easier to read
-all: gpu_image
+all: gpu_image opencl_image cpu_image
 
 clean:
 	rm -f gpu_image
@@ -17,6 +17,12 @@ debug: gpu_image
 
 gpu_image: image.cu image.cpp
 	nvcc $(CFLAGS) image.cpp image.cu -o gpu_image
+
+opencl_image: main_opencl.cpp main.hpp image.hpp image.cpp
+	g++ -std=c++11 -g main_opencl.cpp image.cpp -lOpenCL -o opencl_image -I/usr/local/cuda-9.1/targets/x86_64-linux/include
+
+cpu_image: main.cpp main.hpp image.hpp image.cpp
+	g++ -std=c++11 -g main.cpp image.cpp -o cpu_image
 
 mod11: gpu_image
 	convert mario.jpg mario.ppm

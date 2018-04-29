@@ -40,6 +40,7 @@ typedef enum MemMode_t {
 
 int load_image(const char* fn, uint32_t **buff, uint32_t *buf_length, uint32_t *height, uint32_t *width, MemMode_t mem_mode);
 void write_image(const char *fn, const uint32_t *buf, const unsigned int width, const unsigned int height);
+void free_image(uint32_t *buf, MemMode_t mem_mode);
 
 #include <regex>
 /** String split utility1                                                                                                     
