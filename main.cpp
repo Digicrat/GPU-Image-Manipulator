@@ -133,9 +133,9 @@ void do_convolve(
       throw std::runtime_error("Sprite file must be defined for this operation");
     }
     
-    uint32_t image_size = width*height;
+    uint32_t image_size = width*height*sizeof(uint32_t);
     char out_fn[64];
-    uint32_t num_images = 0;
+    uint32_t num_images = n;
     uint32_t *sprite_data = NULL;
     uint32_t sprite_length=0, sprite_height, sprite_width;
     int status;
@@ -149,31 +149,38 @@ void do_convolve(
       printf("ERROR: Unable to load sprite\n");
       return -1;
     }
-    // Calculate number of images to generate (must be even to simplify logic)
-    num_images = width - (width&1);
+
+    // Calculate number of images to generate (make it even for consitency)
+    if (num_images <= 1)
+    {
+      num_images = width - (width&1);
+    }
+    else
+    {
+      num_images -= num_images&1;
+    }
 
     for(int i = 0; i < num_images; i++)
     {
       for(int x = 0; x < width; x++) {
         for(int y = 0; y < height; y++) {
           uint32_t idx = y*height + x;
+          int sx = x - i; // TODO: To adjust anim rate, multiply by a speed factor
+          int sy = y - i;
 
-          for(int sx = 0; sx < sprite_width; sx++) {
-            for(int sy = 0; sy < sprite_height; sy++) {
-              uint32_t sprite_idx = sy*sprite_height + sx;
-              if (sx < 0 || sy < 0
-                  || sy > sprite_width || sx > sprite_height
-                  || sprite_data[sprite_idx] == host_chromakey) {
-                out_data[idx] = data[idx];
-              } else {
-                out_data[idx] = sprite_data[sprite_idx];
-              }
-            }
+
+          uint32_t sprite_idx = sy*sprite_height + sx;
+          if (sx < 0 || sy < 0
+              || sy > sprite_width || sx > sprite_height
+              || sprite_data[sprite_idx] == host_chromakey) {
+            out_data[idx] = data[idx];
+          } else {
+            out_data[idx] = sprite_data[sprite_idx];
           }
         }
       }
       // Write buffer to disk
-      sprintf(out_fn, "%s[%04d].ppm", output_file, i);
+      sprintf(out_fn, "%s[%04d].ppm", output_file.c_str(), i);
       write_image(out_fn, out_data, width, height);
 
     }

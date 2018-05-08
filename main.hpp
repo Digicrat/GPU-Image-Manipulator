@@ -63,17 +63,21 @@ public:
     if (elems.size() != mask_height*mask_width) {
       throw std::runtime_error("ERROR: Invalid kernel defined\n");
     } else {
-      std::cout << "Convolution Kernel "
+       if (verbose) {
+          std::cout << "Convolution Kernel "
                 << mask_height << " x " << mask_width << std::endl;
+       }
       for(int i = 0; i < (mask_height*mask_width); i++) {
         mask[i] = atoi(elems[i].c_str());
-        std::cout << mask[i] << " ";
-        if ((i+1) % mask_width == 0) {
-          std::cout << std::endl;
+        if (verbose) {
+           std::cout << mask[i] << " ";
+           if ((i+1) % mask_width == 0) {
+              std::cout << std::endl;
+           }
         }
       }
 
-      std::cout << std::endl;
+      if (verbose) { std::cout << std::endl; }
     }
 
     if (input_file.empty()) {
@@ -120,7 +124,9 @@ public:
       ("o,output", "Output filename (PPM format)", cxxopts::value<std::string>(output_file))
       ("m,mode", "Specify action to be performed.  Currently supported modes are:\n"+help_modes, cxxopts::value<int>(mode))
       ("n", "Number of repetitions", cxxopts::value<int>(n))
-      ("M,msg,sprite", "Extra String Argument; Steganographic encoding message or sprite filename", cxxopts::value<std::string>(extra))
+      ("sprite", "Extra String Argument; Steganographic encoding message or sprite filename", cxxopts::value<std::string>(extra))
+       ("M,msg", "Extra String Argument; Steganographic encoding message or sprite filename", cxxopts::value<std::string>(extra))
+       ("help", "Print help")
       ;
 
     return options;
@@ -130,7 +136,7 @@ public:
   {
     uint32_t *image = NULL;
     uint32_t *output = NULL;
-    uint32_t height, width, image_size, outHeight, outWidth;
+    uint32_t height, width, image_size;
     int status;
 
     load_image(input_file.c_str(), &image, &image_size, &height, &width, memMode);
@@ -160,6 +166,7 @@ public:
         break;
       case MODE_CONVOLUTION:
         status = convolve(image, &output, height, width );
+        break;
       default:
         throw std::runtime_error("Invalid or unsupported mode ("+std::to_string(mode)+") specified.");
       }
@@ -172,7 +179,7 @@ public:
           write_image(output_file.c_str(), output, width, height); // TODO/FIXME: Support arbitrary output size
           free_image(output, memMode);
         }
-      } else {
+      } else if (status < 0) {
         throw std::runtime_error("ERROR: Kernel Failed");
       }
     } catch( const std::runtime_error& e) {

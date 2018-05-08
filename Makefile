@@ -24,6 +24,18 @@ opencl_image: main_opencl.cpp main.hpp image.hpp image.cpp
 cpu_image: main.cpp main.hpp image.hpp image.cpp
 	g++ -std=c++11 -g main.cpp image.cpp -o cpu_image
 
+mod13: opencl_image
+	convert Lenna.png Lenna.ppm
+
+	@echo "OPENCL Sprite Animation Test:\n"
+	./opencl_image -m 6 -i Lenna.ppm -o Lenna.opencl.anim -k 0 -M goomba-small.ppm -n 16
+	convert -delay 30 -loop 0 Lenna.opencl.anim*.ppm Lenna.opencl.anim.gif
+
+	@echo "OPENCL Sprite Animation Test 2:\n"
+	./opencl_image -m 6 -i Lenna.ppm -o Lenna.opencl.animF -k 0 -M goomba-small.ppm
+	convert -delay 30 -loop 0 Lenna.opencl.animF*.ppm Lenna.opencl.animF.gif
+
+
 mod11: gpu_image
 	convert mario.jpg mario.ppm
 
@@ -171,4 +183,106 @@ mod4: gpu_image
 	convert colorbands.parsed.ppm colorbands.parsed.png
 	convert pluto.parsed.ppm pluto.parsed.png
 	convert sun.parsed.ppm sun.parsed.png
+
+animTest: gpu_image cpu_image opencl_image
+	convert goomba-small.png goomba-small.ppm
+
+	@echo "CUDA Sprite Animation Test:\n"
+	./gpu_image -m 6 -p -i Lenna.ppm -o Lenna.cuda.anim -k 0 -M goomba-small.ppm -n 16
+	convert -delay 30 -loop 0 Lenna.cuda.anim*.ppm Lenna.cuda.anim.gif
+
+	@echo "CPU Sprite Animation Test:\n"
+	./cpu_image -m 6 -i Lenna.ppm -o Lenna.cpu.anim -k 0 -M goomba-small.ppm -n 16
+	convert -delay 30 -loop 0 Lenna.cpu.anim*.ppm Lenna.cpu.anim.gif
+
+	@echo "OPENCL Sprite Animation Test:\n"
+	./opencl_image -m 6 -i Lenna.ppm -o Lenna.opencl.anim -k 0 -M goomba-small.ppm -n 16
+	convert -delay 30 -loop 0 Lenna.opencl.anim*.ppm Lenna.opencl.anim.gif
+
+
+stegTest: gpu_image cpu_image opencl_image
+	convert Lenna.png Lenna.ppm
+
+	@echo "CUDA Encode 'Hello Hidden World!'\n"
+	./gpu_image -i Lenna.ppm -o Lenna.cuda.hello.ppm -k 0 -m 4 -M "Hello Hidden World!"
+	convert Lenna.cuda.hello.ppm Lenna.cuda.hello.png
+	convert Lenna.cuda.hello.png Lenna.cuda.hello.conv.ppm
+	@echo "\nCUDA Reading back message:\n"
+	./gpu_image -i Lenna.ppm -o Lenna.cuda.hello.conv.ppm -k 0 -m 5
+
+	@echo "\n\nCPU Encode 'Hello Hidden World!'\n"
+	./cpu_image -i Lenna.ppm -o Lenna.cpu.hello.ppm -k 0 -m 4 -M "Hello Hidden World!"
+	convert Lenna.cpu.hello.ppm Lenna.cpu.hello.png
+	convert Lenna.cpu.hello.png Lenna.cpu.hello.conv.ppm
+	@echo "\nCPU Reading back message:\n"
+	./cpu_image -i Lenna.ppm -o Lenna.cpu.hello.conv.ppm -k 0 -m 5
+
+	@echo "\n\nOPENCL Encode 'Hello Hidden World!'\n"
+	./opencl_image -i Lenna.ppm -o Lenna.opencl.hello.ppm -k 0 -m 4 -M "Hello Hidden World!"
+	convert Lenna.opencl.hello.ppm Lenna.opencl.hello.png
+	convert Lenna.opencl.hello.png Lenna.opencl.hello.conv.ppm
+	@echo "\nOPENCL Reading back message:\n"
+	./opencl_image -i Lenna.ppm -o Lenna.opencl.hello.conv.ppm -k 0 -m 5
+
+
+flipTest: gpu_image cpu_image opencl_image
+	@echo "CUDA Flip Image Horizontally (work done using shared memory)"
+	./gpu_image -i Lenna.ppm -o Lenna.cuda.horflip.ppm -m 2
+	convert Lenna.cuda.horflip.ppm Lenna.cuda.horflip.png
+
+	@echo "CUDA Flip Image Vertically (work done using shared memory)"
+	./gpu_image -i Lenna.ppm -o Lenna.cuda.verflip.ppm -m 3
+	convert Lenna.cuda.verflip.ppm Lenna.cuda.verflip.png
+
+	@echo "CPU Flip Image Horizontally (work done using shared memory)"
+	./cpu_image -i Lenna.ppm -o Lenna.cpu.horflip.ppm -m 2
+	convert Lenna.cpu.horflip.ppm Lenna.cpu.horflip.png
+
+	@echo "CPU Flip Image Vertically (work done using shared memory)"
+	./cpu_image -i Lenna.ppm -o Lenna.cpu.verflip.ppm -m 3
+	convert Lenna.cpu.verflip.ppm Lenna.cpu.verflip.png
+
+	@echo "OPENCL Flip Image Horizontally (work done using shared memory)"
+	./opencl_image -i Lenna.ppm -o Lenna.opencl.horflip.ppm -m 2
+	convert Lenna.opencl.horflip.ppm Lenna.opencl.horflip.png
+
+	@echo "OPENCL Flip Image Vertically (work done using shared memory)"
+	./opencl_image -i Lenna.ppm -o Lenna.opencl.verflip.ppm -m 3
+	convert Lenna.opencl.verflip.ppm Lenna.opencl.verflip.png
+
+
+maskTest: gpu_image cpu_image opencl_image
+	convert Lenna.png Lenna.ppm
+	@echo "CUDA Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	./gpu_image -i Lenna.ppm -o Lenna.cuda.orR.ppm -k 255 -m 0
+	convert Lenna.cuda.orR.ppm Lenna.cuda.orR.png
+
+	@echo "CUDA  Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	./gpu_image -i Lenna.ppm -o Lenna.cuda.andR.ppm -k 255 -m 1
+	convert Lenna.cuda.andR.ppm Lenna.cuda.andR.png
+
+	@echo "NPP Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	./gpu_image -i Lenna.ppm -o Lenna.npp.orR.ppm -k 255 -m 0
+	convert Lenna.npp.orR.ppm Lenna.npp.orR.png
+
+	@echo "NPP Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	./gpu_image -i Lenna.ppm -o Lenna.npp.andR.ppm -k 255 -m 1
+	convert Lenna.npp.andR.ppm Lenna.npp.andR.png
+
+	@echo "CPU Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	./cpu_image -i Lenna.ppm -o Lenna.cpu.orR.ppm -k 255 -m 0
+	convert Lenna.cpu.orR.ppm Lenna.cpu.orR.png
+
+	@echo "CPU Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	./cpu_image -i Lenna.ppm -o Lenna.cpu.andR.ppm -k 255 -m 1
+	convert Lenna.cpu.andR.ppm Lenna.cpu.andR.png
+
+	@echo "OPENCL Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	./opencl_image -i Lenna.ppm -o Lenna.opencl.orR.ppm -k 255 -m 0
+	convert Lenna.opencl.orR.ppm Lenna.opencl.orR.png
+
+	@echo "OPENCL Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	./opencl_image -i Lenna.ppm -o Lenna.opencl.andR.ppm -k 255 -m 1
+	convert Lenna.opencl.andR.ppm Lenna.opencl.andR.png
+
 

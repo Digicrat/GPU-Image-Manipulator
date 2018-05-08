@@ -31,7 +31,7 @@ __constant__ uint32_t chromakey = 0x11111111;
  *   simpler to store a second copy in host memory for convenience.
  */
 
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+#define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
   if (code != cudaSuccess)
@@ -302,14 +302,13 @@ public:
   
   int run(int argc, char* argv[])
   {
-    string msg = NULL;
-
     // Parse Arguments
+     bool use_pinned = false;
     cxxopts::Options options = init_options("OpenCL Test App");
     options.add_options()
       ("b,blocks", "Number of blocks", cxxopts::value<uint32_t>(num_blocks))
       ("t,threads", "Number of threads", cxxopts::value<uint32_t>(num_threads))
-      ("p,pinned", "Use PINNED memory where applicable")
+       ("p,pinned", "Use PINNED memory where applicable", cxxopts::value<bool>(use_pinned))
       ("npp", "Use NPP Library for supported functions", cxxopts::value<bool>(use_npp))
       ;
     cxxopts::ParseResult result = parse_options(options, argc, argv);
@@ -318,7 +317,7 @@ public:
     // Set chromakey constant for CUDA
     cudaMemcpyToSymbol(chromakey, &host_chromakey, sizeof(int));
 
-    if (result.count("pinned"))
+    if (use_pinned) //result.count("p"))
     {
       memMode = MEM_HOST_PINNED;
     }
@@ -659,9 +658,9 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
     throw std::runtime_error("Sprite file must be defined for this operation");
   }
     
-  uint32_t image_size = width*height;
+  uint32_t image_size = width*height*sizeof(uint32_t);
   char out_fn[64];
-  uint32_t num_images = 0;
+  uint32_t num_images = n;
   uint32_t *sprite_data = NULL;
   uint32_t sprite_length=0, sprite_height, sprite_width;
   uint32_t *gpu_src, *gpu_sprite, *gpu_out1, *gpu_out2;
@@ -680,84 +679,95 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
   }
   
   // Calculate number of images to generate (must be even to simplify logic)
-  num_images = width - (width&1);
+  if (num_images <= 1)
+  {
+     num_images = width - (width&1);
+  }
+  else
+  {
+     num_images -= num_images&1;
+  }
   
   // Initialize remaining CUDA resources
-  cudaMallocHost((void **)&cpu_out1, image_size);
-  cudaMallocHost((void **)&cpu_out2, image_size);
+  gpuErrChk(cudaMallocHost((void **)&cpu_out1, image_size));
+  gpuErrChk(cudaMallocHost((void **)&cpu_out2, image_size));
 
-  cudaMalloc((void **)&gpu_sprite, image_size);
+  gpuErrChk(cudaMalloc((void **)&gpu_sprite, image_size));
   cudaMemcpy( gpu_sprite, sprite_data, sprite_length, cudaMemcpyHostToDevice );
-  cudaMalloc((void **)&gpu_src, image_size);
-  cudaMemcpy( gpu_src, data, image_size, cudaMemcpyHostToDevice );
-  cudaMalloc((void **)&gpu_out1, image_size);
-  cudaMalloc((void **)&gpu_out2, image_size);
+  gpuErrChk(cudaMalloc((void **)&gpu_src, image_size));
+  gpuErrChk(cudaMemcpy( gpu_src, data, image_size, cudaMemcpyHostToDevice ));
+  gpuErrChk(cudaMalloc((void **)&gpu_out1, image_size));
+  gpuErrChk(cudaMalloc((void **)&gpu_out2, image_size));
   
   // Create events
-  cudaEventCreate(&start1);
-  cudaEventCreate(&start2);
-  cudaEventCreate(&stop1);
-  cudaEventCreate(&stop2);
+  gpuErrChk(cudaEventCreate(&start1));
+  gpuErrChk(cudaEventCreate(&start2));
+  gpuErrChk(cudaEventCreate(&stop1));
+  gpuErrChk(cudaEventCreate(&stop2));
 
   // Create streams
-  cudaStreamCreate(&stream1);
-  cudaStreamCreate(&stream2);
+  gpuErrChk(cudaStreamCreate(&stream1));
+  gpuErrChk(cudaStreamCreate(&stream2));
 
   // Start Initial Kernels
-  cudaEventRecord(start1, stream1);
+  gpuErrChk(cudaEventRecord(start1, stream1));
   gpu_img_sprite<<<num_blocks,num_threads,0,stream1>>>(gpu_src,gpu_sprite,
 						       sprite_width,sprite_height,
 						       gpu_out1,
 						       0);
-  cudaMemcpyAsync( cpu_out1, gpu_out1, image_size, cudaMemcpyDeviceToHost, stream1 );
-  cudaEventRecord(stop1, stream1);
-  cudaEventRecord(start2, stream2);
+  gpuErrChk(cudaMemcpyAsync( cpu_out1, gpu_out1, image_size, cudaMemcpyDeviceToHost, stream1 ));
+  gpuErrChk(cudaEventRecord(stop1, stream1));
+  gpuErrChk(cudaEventRecord(start2, stream2));
   gpu_img_sprite<<<num_blocks,num_threads,0,stream2>>>(gpu_src,gpu_sprite,
 						       sprite_width,sprite_height,
 						       gpu_out2,
 						       1);
-  cudaMemcpyAsync( cpu_out2, gpu_out2, image_size, cudaMemcpyDeviceToHost, stream2 );
-  cudaEventRecord(stop2, stream2);
+  gpuErrChk(cudaMemcpyAsync( cpu_out2, gpu_out2, image_size, cudaMemcpyDeviceToHost, stream2 ));
+  gpuErrChk(cudaEventRecord(stop2, stream2));
   
   // Generate Frames
   for(int i = 0; i < num_images/2; i++)
   {
-    cudaStreamSynchronize(stream1);
+     if (verbose) {
+        printf("Loop %d\n", i);
+     }
+     
+     gpuErrChk(cudaStreamSynchronize(stream1));
 
     // Write buffer 0 to disk
-    sprintf(out_fn, "%s[%04d].ppm", output_file, 2*i);
+    sprintf(out_fn, "%s[%04d].ppm", output_file.c_str(), 2*i);
     write_image(out_fn, cpu_out1, width, height);
 
     // Restart stream1 for next iteration (if this isn't the last iteration)
     if (i+1 != num_images/2) {
-      cudaEventRecord(start1, stream1);
+       gpuErrChk(cudaEventRecord(start1, stream1));
       gpu_img_sprite<<<num_blocks,num_threads,0,stream1>>>(gpu_src,gpu_sprite,
 							   sprite_width,sprite_height,
 							   gpu_out1,
 							   2*(i+1));
 
       // Copy data to CPU from buffer 0
-      cudaMemcpyAsync( cpu_out1, gpu_out1, image_size, cudaMemcpyDeviceToHost, stream1 );
-      cudaEventRecord(stop1, stream1);
+      gpuErrChk(cudaMemcpyAsync( cpu_out1, gpu_out1, image_size, cudaMemcpyDeviceToHost, stream1 ));
+      gpuErrChk(cudaEventRecord(stop1, stream1));
     }
 
-    cudaStreamSynchronize(stream2);
+    gpuErrChk(cudaStreamSynchronize(stream2));
     
     // Write buffer 2 to disk
-    sprintf(out_fn, "%s[%04d].ppm", output_file, 2*i+1);
+    sprintf(out_fn, "%s[%04d].ppm", output_file.c_str(), 2*i+1);
     write_image(out_fn, cpu_out2, width, height);
-
+    printf("\t Start kernel 2\n");
     // Start next kernel
     if (i+1 != num_images/2) {
-      cudaEventRecord(start2, stream2);
+       gpuErrChk(cudaEventRecord(start2, stream2));
       gpu_img_sprite<<<num_blocks,num_threads,0,stream2>>>(gpu_src,gpu_sprite,
 							   sprite_width,sprite_height,
 							   gpu_out2,
 							   1+(2*(i+1)));
 
       // Copy data to CPU from buffer 0
-      cudaMemcpyAsync( cpu_out2, gpu_out2, image_size, cudaMemcpyDeviceToHost, stream2 );
-      cudaEventRecord(stop2, stream2);
+      gpuErrChk(cudaMemcpyAsync( cpu_out2, gpu_out2, image_size, cudaMemcpyDeviceToHost, stream2 ));
+      gpuErrChk(cudaEventRecord(stop2, stream2));
     }
     
     
@@ -765,17 +775,17 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
 
   // Cleanup
   // free CPU+GPU output buffers
-  cudaFree(gpu_out1);
-  cudaFree(gpu_out2);
-  cudaFreeHost(cpu_out1);
-  cudaFreeHost(cpu_out2);
+  gpuErrChk(cudaFree(gpu_out1));
+  gpuErrChk(cudaFree(gpu_out2));
+  gpuErrChk(cudaFreeHost(cpu_out1));
+  gpuErrChk(cudaFreeHost(cpu_out2));
   
   // free Sprite buffers
-  cudaFree(gpu_sprite);
-  cudaFreeHost(sprite_data);
+  gpuErrChk(cudaFree(gpu_sprite));
+  free_image(sprite_data, MEM_HOST_PINNED);
   
   // Note: main fn will free main image cpu buffer
-  cudaFree(gpu_src);
+  gpuErrChk(cudaFree(gpu_src));
 
   return 0;
 }
@@ -829,33 +839,17 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
       throw std::runtime_error("ERROR: Invalid parameters");
     }
     printf("Processing image %s fn of size (%d x %d) with %d threads and %d blocks\n",
-           input_file, height, width, num_threads, num_blocks);
+           input_file.c_str(), height, width, num_threads, num_blocks);
 }
   
 }; // End class GIMP_cuda
   
 int main(int argc, char* argv[])
 {
-#if 1
   // Declare app and initialize
   GIMD_cuda app;
 
   // Parse Arguments, Execute and run
   return app.run(argc, argv);
 
-#else
-  
-      case MODE_STEG_DE:
-	steg_image_de(num_threads, num_blocks, image, image_size, output_file.c_str(), memMode);
-	skip_img_write = 1;
-	break;
-      case MODE_STEG_EN:
-	if (msg.length() == 0) {
-	  printf("ERROR: Encryption needs a message to encrypt!\n");
-	  break;
-	}
-	steg_image_en(num_threads, num_blocks, image, image_size, msg.c_str(), memMode);
-	break;
-
-#endif
 }
