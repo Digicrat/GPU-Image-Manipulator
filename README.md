@@ -4,26 +4,46 @@ Not to be confused with GIMP, GIMD is an assorted collection of image manipulati
 
 The goal is to provide functional image manipulation tools that demonstrate a variety of GPU programming options, with comparitive timing metrics when available for CUDA, OpenCL, and native CPU code.
 
+This project now consists of three executables, one each for CPU (cpu_image), CUDA (gpu_image), and OpenCL (opencl_image), with equivalent usage and shared code.  Seperate executables were created to maintain readability and simplicity.  Running "make" will build all targets.
+
+TODO/Planned: All executables are be capable of appending timing information for their critical sections to a CSV for analysis.
+
 ## Usage
-See the Makefile "modX" targets for examples, or run the executables with "--help"
+See the Makefile "modX" targets for examples, or run the executables with "--help".  
+
+The following modes are supported (detailed documentation TODO):
+
+| Mode          | id | Description                         |
+| ------------- |:--:| ----------------------------------- |
+| OR_MASK*      | 0  | Logical OR given mask (--chromakey) |
+| AND_MASK*     | 1  | Logical AND given mask (--chromakey)|
+| FLIP_HOR      | 2  | Flip image horizontally |
+| FLIP_VER      | 3  | Flip image vertically |
+| STEG_EN       | 4  | Steganographic encryption (embed a message in image) |
+| STEG_DE       | 5  | Steganographic decryption (decode message) |
+| SPRITE_ANIM   | 6  | Sprite animation |
+| ADD_RAND_NOISE| 7  | Add random noise to image |
+| CONVOLUTION   | 8  | Execute (non-optimized) convolution of image with given kernel |
+
+NOTE: Not all functions are currently functional in all modes. This library is still a work in progress.
+* These functions can be executed in CUDA, CUDA NPP Library (gpu_image -npp ...), CPU, or OpenCL
 
 ## File Description
 
 - *.png, *.jpg - Example input images (TODO: Document where images were downloaded from)
 - Makefile - Master build configuration.  "make" will build all binaries while "make modX" will execute dependencies corresponding to the appropriate module.
--- TODO: List supported modules here, with descriptions
-- image.cu - CUDA Application Methods
+- image.cu - CUDA Application Implementation
 - imagel.cl - OpenCL Sources
 - image.hpp, image.cpp - Common CPU Library Functions
 - cxxopts.hpp - Library for command line argument parsing from https://github.com/jarro2783/cxxopts
 - main.hpp - Prototypes and settings for main application functions (independent of target)
-
+- main.cpp - CPU Application Implementation
+- main_opencl.cpp - OpenCL Application Implementation
 
 # References & Resources
 This application is a class project for EN605.417, with related source code at https://github.com/JHU-EP-Intro2GPU/EN605.417.FA
 
 Command Line Argument Parsing from https://github.com/jarro2783/cxxopts
-  # TODO: Convert this into a submodule
 
 Simple Convolution Examples from https://github.com/bgaster/opencl-book-samples/blob/master/src/Chapter_3/OpenCLCo
 
