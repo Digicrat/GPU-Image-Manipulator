@@ -402,6 +402,7 @@ public:
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     printf("mod_image CUDA operation took %f ms\n", milliseconds);
+    log_timing(milliseconds*1000000);
     
     // Report if any errors occurred during CUDA operations
     cudaError_t err = cudaGetLastError();
@@ -470,10 +471,15 @@ public:
     //   (failure to do so can have unpredictable results)
     cudaThreadSynchronize();
     cudaEventRecord(stop);
-  
+    
+    // Copy msg back (blocking call, making above redundant except for purposes of timing)
+    cudaMemcpy( msg, gpu_msg, msgLen, cudaMemcpyDeviceToHost ); 
+
+
+    printf("Decoded message reads: %s \n\n", msg);
+
   
     /* Cleanup */
-    cudaMemcpy( msg, gpu_msg, msgLen, cudaMemcpyDeviceToHost ); 
     cudaFree(gpu_data);
     cudaFree(gpu_data2);
     cudaFree(gpu_msg);
@@ -487,14 +493,12 @@ public:
       break;
     }
 
-    printf("Decoded message reads: %s \n\n", msg);
-    printf("DEBUG: msg[0]=%x\n", msg[0]);
-
     // Output timing metrics
     cudaEventSynchronize(stop);
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     printf("decryption CUDA operation took %f ms\n", milliseconds);
+    log_timing(milliseconds*1000000);
 
     // Report if any errors occurred during CUDA operations
     cudaError_t err = cudaGetLastError();
@@ -502,14 +506,14 @@ public:
       printf("Error: %s\n", cudaGetErrorString(err));
 
     *output = data2;
-    return 1;
+    return 0;
   }
 
   // Simple steganographic message decryption
   int steg_image_en(uint32_t *data, uint32_t **output, uint32_t image_size)
   {
     if (num_threads == 0) {
-      num_threads = 32;
+      num_threads = 64;
     }
     if (num_blocks == 0) {
       num_blocks = (extra.length() / num_threads)+1;
@@ -553,6 +557,7 @@ public:
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     printf("encryption CUDA operation took %f ms\n", milliseconds);
+    log_timing(milliseconds*1000000);
 
     // Report if any errors occurred during CUDA operations
     cudaError_t err = cudaGetLastError();
@@ -625,6 +630,7 @@ public:
   float milliseconds = 0;
   cudaEventElapsedTime(&milliseconds, start, stop);
   printf("mod_image CUDA operation took %f ms\n", milliseconds);
+  log_timing(milliseconds*1000000);
 
   // Report if any errors occurred during CUDA operations
   cudaError_t err = cudaGetLastError();
@@ -668,6 +674,11 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
   cudaEvent_t start1, stop1, start2, stop2;
   cudaStream_t stream1, stream2;
   int status;
+
+  // Define performance metrics
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
   
   // Load sprite image
   status = load_image(extra.c_str(),
@@ -710,6 +721,7 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
   gpuErrChk(cudaStreamCreate(&stream2));
 
   // Start Initial Kernels
+  cudaEventRecord(start);
   gpuErrChk(cudaEventRecord(start1, stream1));
   gpu_img_sprite<<<num_blocks,num_threads,0,stream1>>>(gpu_src,gpu_sprite,
 						       sprite_width,sprite_height,
@@ -773,6 +785,14 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
     
   }
 
+  // Output timing metrics
+  cudaEventSynchronize(stop);
+  float milliseconds = 0;
+  cudaEventElapsedTime(&milliseconds, start, stop);
+  printf("sprite anim CUDA operation took %f ms\n", milliseconds);
+  log_timing(milliseconds*1000000);
+
+  
   // Cleanup
   // free CPU+GPU output buffers
   gpuErrChk(cudaFree(gpu_out1));
@@ -830,7 +850,6 @@ int img_sprite_anim(uint32_t *data, uint32_t **output,
       num_threads = width;
     }
     if (num_blocks == 0) {
-      //num_blocks = height;
       num_blocks = (width*height)/num_threads;
     }
 

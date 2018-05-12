@@ -139,7 +139,6 @@ __kernel void do_steg_en(
    const uint chromakey
    )
 {
-#if 0 // TODO/In Progress
    const uint idx = get_global_id(0);
    unsigned char halfByte;
 
@@ -148,7 +147,7 @@ __kernel void do_steg_en(
       unsigned int tmp = data[idx];
 
       // Load the half-byte from source message
-    if (idx & 0x1 == 1) {
+      if ((idx & 0x1) == 1) {
        // Odd threads take the upper half-byte
        halfByte = (msg[(idx-1)/2]) >> 4;
     } else {
@@ -172,8 +171,22 @@ __kernel void do_steg_en(
       
    }
    // else nothing to be done
-#endif
 }
+
+
+char do_steg_de_step(const uint data, const  uint data2, const uint chromakey)
+{
+   // Difference the two images
+   uint tmp = data2 ^ data;
+
+   // Calculate the half-word
+   uint rtv = GET_R(tmp) & 0x1; // Bit 1
+   rtv |= (GET_G(tmp) & 0x1) << 1; // Bit 2
+   rtv |= (GET_B(tmp) & 0x3) << 2; // Bits 3+4
+   return (rtv & 0xF);
+   
+}
+
 
 __kernel void do_steg_de(
    const __global uint * data,
@@ -182,11 +195,17 @@ __kernel void do_steg_de(
    const uint chromakey
    )
 {
-#if 0 // TODO/In-progress
-   __local char msg[get_local_size(0)]; // @FIXME: dynamically sized variable not supported
-   const uint idx = get_global_id(0);
-   const uint local_idx = get_local_id(0);
-   uint tmp, tmp2;
+   const uint idx = get_global_id(0)*2;
+#if 1 // Cleaner implementation
+   
+   msg_out[get_global_id(0)] = (do_steg_de_step(data[idx], data2[idx], chromakey)
+                   | (do_steg_de_step(data[idx+1], data2[idx+1], chromakey) << 4)
+      );
+   
+#else // Alternative Implementation using local variables and synchronization
+   __local char msg[128]; // Or pass as fn parameter: __local char* msg
+   uint tmp, word1, word2;
+   __local char msg[128];
 
   // Difference the two images using XOR
   tmp = data2[idx] ^ data[idx];
@@ -200,22 +219,13 @@ __kernel void do_steg_de(
   // Sync threads
    barrier(CLK_LOCAL_MEM_FENCE);
 
-  if (idx & 0x1 == 1) {
-    // Only odd threads will proceed
-
-    // Merge the half-words and apply the cipher (to each half)
-    tmp =   ((int)(msg[local_idx-1]) - chromakey) & 0xF;
-    tmp |= (((int)(msg[local_idx]) - chromakey) & 0xF) << 4;
-
-    // Output decrypted character
-    msg_out[ (idx-1)/2 ] = tmp;
-    
-  } else {
-    // Even threads are now idle/stalled
-  }
-
-
    
+   // Merge the half-words and apply the cipher (to each half)
+   tmp =   ((int)(msg[local_idx-1]) - chromakey) & 0xF;
+   tmp |= (((int)(msg[local_idx]) - chromakey) & 0xF) << 4;
+   
+   // Output decrypted character
+   msg_out[ (idx-1)/2 ] = tmp;
+#endif
 
-#endif   
 }

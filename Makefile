@@ -3,6 +3,8 @@
 #   Note: We could, with work, use precompiler macros to build all 3 in a single file, but splitting is easier to read
 all: gpu_image opencl_image cpu_image
 
+tests: animTest stegTest flipTest maskTest
+
 clean:
 	rm -f gpu_image
 	rm LennaAnim*
@@ -226,62 +228,62 @@ stegTest: gpu_image cpu_image opencl_image
 
 
 flipTest: gpu_image cpu_image opencl_image
-	@echo "CUDA Flip Image Horizontally (work done using shared memory)"
+	@echo "\nCUDA Flip Image Horizontally (work done using shared memory)"
 	./gpu_image -i Lenna.ppm -o Lenna.cuda.horflip.ppm -m 2
 	convert Lenna.cuda.horflip.ppm Lenna.cuda.horflip.png
 
-	@echo "CUDA Flip Image Vertically (work done using shared memory)"
+	@echo "\nCUDA Flip Image Vertically (work done using shared memory)"
 	./gpu_image -i Lenna.ppm -o Lenna.cuda.verflip.ppm -m 3
 	convert Lenna.cuda.verflip.ppm Lenna.cuda.verflip.png
 
-	@echo "CPU Flip Image Horizontally (work done using shared memory)"
+	@echo "\nCPU Flip Image Horizontally (work done using shared memory)"
 	./cpu_image -i Lenna.ppm -o Lenna.cpu.horflip.ppm -m 2
 	convert Lenna.cpu.horflip.ppm Lenna.cpu.horflip.png
 
-	@echo "CPU Flip Image Vertically (work done using shared memory)"
+	@echo "\nCPU Flip Image Vertically (work done using shared memory)"
 	./cpu_image -i Lenna.ppm -o Lenna.cpu.verflip.ppm -m 3
 	convert Lenna.cpu.verflip.ppm Lenna.cpu.verflip.png
 
-	@echo "OPENCL Flip Image Horizontally (work done using shared memory)"
+	@echo "\nOPENCL Flip Image Horizontally (work done using shared memory)"
 	./opencl_image -i Lenna.ppm -o Lenna.opencl.horflip.ppm -m 2
 	convert Lenna.opencl.horflip.ppm Lenna.opencl.horflip.png
 
-	@echo "OPENCL Flip Image Vertically (work done using shared memory)"
+	@echo "\nOPENCL Flip Image Vertically (work done using shared memory)"
 	./opencl_image -i Lenna.ppm -o Lenna.opencl.verflip.ppm -m 3
 	convert Lenna.opencl.verflip.ppm Lenna.opencl.verflip.png
 
 
 maskTest: gpu_image cpu_image opencl_image
 	convert Lenna.png Lenna.ppm
-	@echo "CUDA Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	@echo "\nCUDA Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
 	./gpu_image -i Lenna.ppm -o Lenna.cuda.orR.ppm -k 255 -m 0
 	convert Lenna.cuda.orR.ppm Lenna.cuda.orR.png
 
-	@echo "CUDA  Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	@echo "\nCUDA  Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
 	./gpu_image -i Lenna.ppm -o Lenna.cuda.andR.ppm -k 255 -m 1
 	convert Lenna.cuda.andR.ppm Lenna.cuda.andR.png
 
-	@echo "NPP Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	@echo "\nNPP Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
 	./gpu_image -i Lenna.ppm -o Lenna.npp.orR.ppm -k 255 -m 0
 	convert Lenna.npp.orR.ppm Lenna.npp.orR.png
 
-	@echo "NPP Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	@echo "\nNPP Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
 	./gpu_image -i Lenna.ppm -o Lenna.npp.andR.ppm -k 255 -m 1
 	convert Lenna.npp.andR.ppm Lenna.npp.andR.png
 
-	@echo "CPU Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	@echo "\nCPU Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
 	./cpu_image -i Lenna.ppm -o Lenna.cpu.orR.ppm -k 255 -m 0
 	convert Lenna.cpu.orR.ppm Lenna.cpu.orR.png
 
-	@echo "CPU Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	@echo "\nCPU Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
 	./cpu_image -i Lenna.ppm -o Lenna.cpu.andR.ppm -k 255 -m 1
 	convert Lenna.cpu.andR.ppm Lenna.cpu.andR.png
 
-	@echo "OPENCL Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
+	@echo "\nOPENCL Constant Memory, Apply or-mask of 0xFF (set red channel to max)\n"
 	./opencl_image -i Lenna.ppm -o Lenna.opencl.orR.ppm -k 255 -m 0
 	convert Lenna.opencl.orR.ppm Lenna.opencl.orR.png
 
-	@echo "OPENCL Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
+	@echo "\nOPENCL Constant Memory, Apply and-mask of 0xFF (show red component only)\n"
 	./opencl_image -i Lenna.ppm -o Lenna.opencl.andR.ppm -k 255 -m 1
 	convert Lenna.opencl.andR.ppm Lenna.opencl.andR.png
 

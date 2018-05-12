@@ -24,11 +24,16 @@ public:
   int convolve(uint32_t *input, uint32_t **output, const uint32_t height, const uint32_t width )
   {
     *output = (uint32_t*)malloc(height*width);
+
+    auto start = std::chrono::high_resolution_clock::now();
+
     for(int x = 0; x < width; x++) {
       for(int y = 0; y < height; y++) {
         do_convolve(input, *output, height, width, x, y);
       }
     }
+    auto finish = std::chrono::high_resolution_clock::now();
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
     
     return 1;
   }
@@ -59,6 +64,9 @@ void do_convolve(
   int mod_image_flip_row(uint32_t *data, uint32_t **output, const uint32_t height, const uint32_t width )
   {
     uint32_t row[width];
+
+    auto start = std::chrono::high_resolution_clock::now();
+
     for(int y = 0; y < height; y++) {
       uint32_t base = y*width;
       for(int x = 0; x < width; x++) {
@@ -68,10 +76,18 @@ void do_convolve(
         data[base + width-1 - x] = row[x];
       }
     }
+
+    auto finish = std::chrono::high_resolution_clock::now();
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
+
+    return 1;
   }
   int mod_image_flip_col(uint32_t *data, uint32_t **output, const uint32_t height, const uint32_t width )
   {
     uint32_t col[height];
+
+    auto start = std::chrono::high_resolution_clock::now();
+    
     for(int x = 0; x < width; x++) {
       for(int y = 0; y < height; y++) {
         col[y] = data[ y*width + x ];
@@ -80,10 +96,15 @@ void do_convolve(
         data[ y*width + x ] = col[height-y-1];
       }
     }
+
+    auto finish = std::chrono::high_resolution_clock::now();
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
+    return 1;
   }
   
   int mod_image(uint32_t *data, uint32_t **output, const uint32_t height, const uint32_t width )
   {
+    
     switch(mode) {
     case MODE_ADD_RAND_NOISE:
       srand(time(NULL));
@@ -95,6 +116,9 @@ void do_convolve(
       return mod_image_flip_col(data, output, height, width);
       break;
     }
+
+    auto start = std::chrono::high_resolution_clock::now();
+    
     for(int x = 0; x < width; x++) {
       for(int y = 0; y < height; y++) {
         uint32_t idx = y*width + x;
@@ -123,6 +147,10 @@ void do_convolve(
         }
       }
     }
+
+    auto finish = std::chrono::high_resolution_clock::now();
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
+    
     return 1;
   }
 
@@ -160,6 +188,8 @@ void do_convolve(
       num_images -= num_images&1;
     }
 
+    auto start = std::chrono::high_resolution_clock::now();
+    
     for(int i = 0; i < num_images; i++)
     {
       for(int x = 0; x < width; x++) {
@@ -184,6 +214,11 @@ void do_convolve(
       write_image(out_fn, out_data, width, height);
 
     }
+
+    auto finish = std::chrono::high_resolution_clock::now();
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
+
+    
     free_image(sprite_data, memMode);
 
     return 0;
@@ -198,6 +233,9 @@ void do_convolve(
       printf("ERROR: Message is too long to be encoded in this image\n");
       return -1;
     }
+
+    auto start = std::chrono::high_resolution_clock::now();
+    
     for(int idx = 0; idx < msgLen*2; idx++) {
       uint32_t tmp = data[idx];
       uint8_t halfByte;
@@ -224,13 +262,17 @@ void do_convolve(
       data[idx] = tmp;
       
     }
+
+    auto finish = std::chrono::high_resolution_clock::now();
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
     
     return 1;
   }
+
   int steg_image_de(uint32_t *data, uint32_t **output,
                     const uint32_t image_size, const uint32_t data_height, const uint32_t data_width )
   {
-    std::string msg = "";
+    std::vector<char> msgv;
     uint8_t tmp2 = 0;
     uint8_t oddByte = 0;
     uint32_t data2_length=0, height, width;
@@ -249,9 +291,10 @@ void do_convolve(
       return -1;
     }
 
+    auto start = std::chrono::high_resolution_clock::now();
     
-    for(int x = 0; x < width; x++) {
-      for(int y = 0; y < height; y++) {
+    for(int y = 0; y < height; y++) {
+      for(int x = 0; x < width; x++) {
         uint32_t idx = y*height + x;
         uint32_t tmp = data2[idx] ^ data[idx];
         
@@ -261,17 +304,25 @@ void do_convolve(
         tmp2 |= (GET_B(tmp) & 0x3) << 2; // Bits 3+4
 
         if (idx & 0x1 == 1) {
-          tmp = (oddByte-host_chromakey) & 0xF;
-          tmp |= (tmp2-host_chromakey) & 0xF;
-          msg += tmp;
+          tmp = ((oddByte-host_chromakey) & 0xF);
+          tmp |= ((tmp2-host_chromakey) & 0xF) << 4;
+          msgv.push_back(tmp);
+          if (tmp == 0)
+          {
+            break; // NULL-char means end of string, we can end early
+          }
         } else {
           oddByte = tmp2;
         }
       }
     }
+
+    auto finish = std::chrono::high_resolution_clock::now();
+
+    std::cout << "Decoded message is: %s\n" << std::string(msgv.begin(), msgv.end()) << std::endl << "Decoding took " << std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count()  << " ns" << std::endl;
+    log_timing(std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count());
     
-    *output = data2;
-    return 1;
+    return 0;
   }
 
 };

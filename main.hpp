@@ -5,6 +5,8 @@
 #include "image.hpp"
 #include <string>
 #include <iostream>
+#include <chrono>
+#include <fstream>
 
 typedef enum ImageActions_t {
   // General Purpose Action Selectors (corresponding to functions below)
@@ -37,7 +39,9 @@ protected:
   std::string sprite_fn;
   std::string extra;
   uint32_t host_chromakey = 0x11111111;
-  
+
+   std::string log_line;
+   
 public:
   ~GIMD_main()
   {
@@ -49,6 +53,13 @@ public:
   
   cxxopts::ParseResult parse_options(cxxopts::Options options, int argc, char* argv[])
   {
+     // Assemble Log line
+     for(int i = 0; i < argc; i++) {
+        log_line.append(argv[i]);
+        log_line.append("\t");
+     }
+
+     // Parse arguments
     cxxopts::ParseResult result = options.parse(argc, argv);
     if (result.count("help"))
     {
@@ -138,7 +149,7 @@ public:
     uint32_t *output = NULL;
     uint32_t height, width, image_size;
     int status;
-
+    
     load_image(input_file.c_str(), &image, &image_size, &height, &width, memMode);
 
     if(image == NULL)
@@ -190,7 +201,21 @@ public:
     free_image(image, memMode);
     
   }
-  
+
+   /** Outputs timing metrics to metrics.csv as a tab-delimited file
+    *   containing Timestamp, duration (ns), and input arguments.
+    */
+   void log_timing(uint64_t ns)
+   {
+
+      std::ofstream outfile;
+      outfile.open("metrics.csv", std::ios_base::app);
+      std::time_t result = std::time(nullptr);
+      char* time = std::ctime(&result);
+      time[strlen(time)-1]='\0';
+      outfile << time << "\t" << ns << "\t" << log_line << std::endl;
+   }
+   
 
   /*** Virtual Action Functions 
        All of the following functions return:

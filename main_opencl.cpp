@@ -240,6 +240,10 @@ class GIMD_OpenCL : virtual public GIMD_main
                 << (evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
                     - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>())
                 << " ns." << std::endl;
+      
+      log_timing(evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
+                 - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>());
+
     return 1;
   }
 
@@ -350,6 +354,7 @@ class GIMD_OpenCL : virtual public GIMD_main
         timingEvents.push_back(timingEvt);
      }
 
+     uint64_t total_time = 0;
      for( int i = 0; i < num_images; i++)
      {
         cl::Event evt = eventList[i];
@@ -373,9 +378,14 @@ class GIMD_OpenCL : virtual public GIMD_main
                 - timingEvt.getProfilingInfo<CL_PROFILING_COMMAND_START>())
            );
         
+        total_time += (timingEvt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
+                       - timingEvt.getProfilingInfo<CL_PROFILING_COMMAND_START>());
         // Free resources
         free_image(out, memMode);
      }
+
+     // Only output total execution time for generation of all images
+     log_timing(total_time);
      
      free_image(sprite_data, memMode);
      return 0;
@@ -429,6 +439,9 @@ class GIMD_OpenCL : virtual public GIMD_main
               << (evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
                   - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>())
               << " ns." << std::endl;
+    log_timing(evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
+     - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>());
+
     return 1;
   }
   int steg_image_de(uint32_t *input, uint32_t **output,
@@ -458,6 +471,10 @@ class GIMD_OpenCL : virtual public GIMD_main
         free(enc_data);
         return -1;
      }
+     else
+     {
+        status = 0; // maintain correct return value
+     }
 
      // Message decoding buffer
      size_t msg_len = height*width/2;
@@ -485,12 +502,19 @@ class GIMD_OpenCL : virtual public GIMD_main
         checkErr(kernel.setArg(2, buffer_msg),"setArg2");
         checkErr(kernel.setArg(3, host_chromakey),"setArg3"); // Cipher key
 
+        /* Allocate a local variable for the kernel
+         *  In C API, this would be clSetKernelArg(kernel, 4, SIZE, NULL);
+         *  C++ example below for reference. Code has since been refactored not to 
+         *    require usage of local memory.
+         */
+        //checkErr(kernel.setArg(4, cl::Local(128)), "setLocalArg4");
+
         // Enqueue Kernel
         cl::Event evt;
         checkErr( queue.enqueueNDRangeKernel(kernel,
                                          cl::NullRange, // Offset
-                                             cl::NDRange(width,height), // Global Work Size
-                                         cl::NullRange, // Local Work Size
+                                             cl::NDRange(width*height/2), // Global Work Size
+                                             cl::NullRange, // Local Work Size`#if )0
                                          NULL, // Optional Events
                                          &evt // Optional Event pointer
                  ), "enqueueNDRangeKernel");
@@ -507,6 +531,9 @@ class GIMD_OpenCL : virtual public GIMD_main
                   - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>())
               << " ns." << std::endl;
     printf("Decoded message reads: %s\n", msg);
+    
+    log_timing(evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
+     - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>());
 
 
      }
@@ -608,7 +635,8 @@ class GIMD_OpenCL : virtual public GIMD_main
                 << (evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
                     - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>())
                 << " ns." << std::endl;
-
+      log_timing(evt.getProfilingInfo<CL_PROFILING_COMMAND_END>()
+                  - evt.getProfilingInfo<CL_PROFILING_COMMAND_START>());
       return (uint32_t*)&outputSignal[0];
    }
 

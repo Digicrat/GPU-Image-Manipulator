@@ -1,15 +1,16 @@
 # GPU Image Manipulation Demonstrator (GIMD)
 
-Not to be confused with GIMP, GIMD is an assorted collection of image manipulation demos.  Functionality is in the spirit of a lightweight ImageMagick, but with the primary goal to serve as a complete example and introduction to GPU programming.
+Not to be confused with GIMP, GIMD is an assorted collection of image manipulation demos.  Functionality is in the spirit of a lightweight ImageMagick, but with the primary goal to serve as a thorough set of introductory examples to GPU programming.
 
 The goal is to provide functional image manipulation tools that demonstrate a variety of GPU programming options, with comparitive timing metrics when available for CUDA, OpenCL, and native CPU code.
 
-This project now consists of three executables, one each for CPU (cpu_image), CUDA (gpu_image), and OpenCL (opencl_image), with equivalent usage and shared code.  Seperate executables were created to maintain readability and simplicity.  Running "make" will build all targets.
+The applications output performance metrics to metrics.csv of equivalent logic in each of the available examples for easy comparison.  There are many factors that can explain performance differences between the CUDA and OpenCL implementations, not the least of which are simple differences in how the respective kernels have been configured for some cases.  
 
-TODO/Planned: All executables are be capable of appending timing information for their critical sections to a CSV for analysis.
+This project consists of three executables, one each for CPU (cpu_image), CUDA (gpu_image), and OpenCL (opencl_image), with equivalent usage parameters and shared code.  Seperate executables were created to maintain readability and simplicity.  Running "make" will build all targets, while "make tests" will build and execute a series of pre-configured tests.
+
 
 ## Usage
-See the Makefile "modX" targets for examples, or run the executables with "--help".  
+See the Makefile "modX" and "*Test" targets for examples, or run the executables with "--help" for full usage information.  
 
 The following modes are supported (detailed documentation TODO):
 
@@ -22,11 +23,12 @@ The following modes are supported (detailed documentation TODO):
 | STEG_EN       | 4  | Steganographic encryption (embed a message in image) |
 | STEG_DE       | 5  | Steganographic decryption (decode message) |
 | SPRITE_ANIM   | 6  | Sprite animation |
-| ADD_RAND_NOISE| 7  | Add random noise to image |
-| CONVOLUTION   | 8  | Execute (non-optimized) convolution of image with given kernel |
+| ADD_RAND_NOISE| 7+ | Add random noise to image |
+| CONVOLUTION   | 8+ | Execute (non-optimized) convolution of image with given kernel |
 
 NOTE: Not all functions are currently functional in all modes. This library is still a work in progress.
 * These functions can be executed in CUDA, CUDA NPP Library (gpu_image -npp ...), CPU, or OpenCL
++ These modes may not be available on all platforms as of yet.
 
 ## File Description
 
@@ -39,6 +41,7 @@ NOTE: Not all functions are currently functional in all modes. This library is s
 - main.hpp - Prototypes and settings for main application functions (independent of target)
 - main.cpp - CPU Application Implementation
 - main_opencl.cpp - OpenCL Application Implementation
+
 
 # References & Resources
 This application is a class project for EN605.417, with related source code at https://github.com/JHU-EP-Intro2GPU/EN605.417.FA
