@@ -3,7 +3,7 @@
 #   Note: We could, with work, use precompiler macros to build all 3 in a single file, but splitting is easier to read
 all: gpu_image opencl_image cpu_image
 
-tests: animTest stegTest flipTest maskTest
+tests: animTest stegTest flipTest maskTest noiseTest
 
 clean:
 	rm -f gpu_image
@@ -185,6 +185,24 @@ mod4: gpu_image
 	convert colorbands.parsed.ppm colorbands.parsed.png
 	convert pluto.parsed.ppm pluto.parsed.png
 	convert sun.parsed.ppm sun.parsed.png
+
+# NOTE: Mask decimal due to limitation in cxxopts.h
+#  0x00323232 = 3289650
+noiseTest: gpu_image cpu_image opencl_image
+	convert Lenna.png Lenna.ppm
+
+	@echo "CUDA Noise Generation Tests:\n"
+	./gpu_image -m 7 -i Lenna.ppm -o Lenna.cuda.noise1.ppm
+	./gpu_image -m 7 -i Lenna.ppm -o Lenna.cuda.noise2.ppm -k 3289650
+	convert Lenna.cuda.noise1.ppm Lenna.cuda.noise1.png
+	convert Lenna.cuda.noise2.ppm Lenna.cuda.noise2.png
+
+	@echo "CUDA Noise Generation Tests:\n"
+	./cpu_image -m 7 -i Lenna.ppm -o Lenna.cpu.noise1.ppm
+	./cpu_image -m 7 -i Lenna.ppm -o Lenna.cpu.noise2.ppm -k 3289650
+	convert Lenna.cpu.noise1.ppm Lenna.cpu.noise1.png
+	convert Lenna.cpu.noise2.ppm Lenna.cpu.noise2.png
+
 
 animTest: gpu_image cpu_image opencl_image
 	convert goomba-small.png goomba-small.ppm
