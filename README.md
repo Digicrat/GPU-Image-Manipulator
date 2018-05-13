@@ -12,7 +12,7 @@ This project consists of three executables, one each for CPU (cpu_image), CUDA (
 ## Usage
 See the Makefile "modX" and "*Test" targets for examples, or run the executables with "--help" for full usage information.  
 
-The following modes are supported (detailed documentation TODO):
+The following modes are supported:
 
 | Mode          | id | Description                         |
 | ------------- |:--:| ----------------------------------- |
@@ -32,7 +32,7 @@ NOTE: Not all functions are currently functional in all modes. This library is s
 
 ## File Description
 
-- *.png, *.jpg - Example input images (TODO: Document where images were downloaded from)
+- *.png, *.jpg - Example input images
 - Makefile - Master build configuration.  "make" will build all binaries while "make modX" will execute dependencies corresponding to the appropriate module.
 - image.cu - CUDA Application Implementation
 - imagel.cl - OpenCL Sources
@@ -72,7 +72,7 @@ CUDA:
 - CuRand Library: https://docs.nvidia.com/cuda/curand/host-api-overview.html
 - CuFFT Library: https://docs.nvidia.com/cuda/cufft/index.html
 - Blog Entries:
-- - Pageable Memory - https://devtalk.nvidia.com/default/topic/402801/pageable-and-non-pageable-memory/
+-- Pageable Memory - https://devtalk.nvidia.com/default/topic/402801/pageable-and-non-pageable-memory/
 -- Unified Memory: https://devblogs.nvidia.com/unified-memory-cuda-beginners/
 -- Streams: https://devblogs.nvidia.com/gpu-pro-tip-cuda-7-streams-simplify-concurrency/
 -- Cuda C++11 Features: https://devblogs.nvidia.com/power-cpp11-cuda-7/
